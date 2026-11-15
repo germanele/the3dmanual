@@ -71,7 +71,12 @@ async function init() {
     const cleanSql = sql.trim().toLowerCase();
 
     if (cleanSql.includes('from parametros_base')) return [...cache.parametros_base];
-    if (cleanSql.includes('from articulos')) return [...cache.articulos].sort((x, y) => x.id_articulo.localeCompare(y.id_articulo));
+    
+    // Corrección para asegurar que devuelva los artículos ordenados correctamente
+    if (cleanSql.includes('from articulos')) {
+      return [...cache.articulos].sort((x, y) => String(x.id_articulo).localeCompare(String(y.id_articulo)));
+    }
+
     if (cleanSql.includes('from escalas_reales') && cleanSql.includes('join articulos')) {
       return cache.escalas_reales.map(e => {
         const art = cache.articulos.find(a => a.id_articulo === e.id_articulo);
@@ -79,6 +84,7 @@ async function init() {
       });
     }
     if (cleanSql.includes('from escalas_reales')) return [...cache.escalas_reales];
+    
     if (cleanSql.includes('from registro_costos') && cleanSql.includes('join articulos')) {
       return cache.registro_costos.map(r => {
         const art = cache.articulos.find(a => a.id_articulo === r.id_articulo);
@@ -89,9 +95,10 @@ async function init() {
     if (cleanSql.includes('from combos_guardados')) return [...cache.combos_guardados].sort((x, y) => y.id - x.id);
     if (cleanSql.includes('from pedidos')) return [...cache.pedidos].sort((x, y) => new Date(y.fecha) - new Date(x.fecha));
     if (cleanSql.includes('from pedido_items')) return [...cache.pedido_items];
+    
     if (cleanSql.includes('select id_articulo from articulos where lower(trim(nombre))')) {
       const target = params[0] ? params[0].toLowerCase().trim() : '';
-      return cache.articulos.filter(a => a.nombre.toLowerCase().trim() === target);
+      return cache.articulos.filter(a => a.nombre && a.nombre.toLowerCase().trim() === target);
     }
     if (cleanSql.includes('select id from escalas_reales where id_articulo')) {
       return cache.escalas_reales.filter(e => e.id_articulo === params[0] && e.cantidad === params[1]);
