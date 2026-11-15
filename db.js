@@ -21,13 +21,31 @@ const DB3D = (() => {
     pedido_items: []
   };
 
-  async function init() {
+ // async function init() {
+ //   if (typeof supabase === 'undefined') {
+ //     throw new Error('No se pudo cargar la librería de Supabase.');
+ //   }
+ //   supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+ //   await reloadCache();
+ // } 
+
+async function init() {
     if (typeof supabase === 'undefined') {
       throw new Error('No se pudo cargar la librería de Supabase.');
     }
-    supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    
+    // Limpiamos la URL por si acaso tiene barras o sufijos de más
+    const cleanUrl = SUPABASE_URL.replace(/\/+$/, '').replace(/\/rest\/v1\/?$/i, '');
+    
+    // Inicializamos con opciones para asegurar que apunte limpiamente
+    supabaseClient = supabase.createClient(cleanUrl, SUPABASE_ANON_KEY, {
+      db: { schema: 'public' },
+      auth: { persistSession: false }
+    });
+
     await reloadCache();
   }
+
 
   async function reloadCache() {
     const [p, a, er, rc, cg, ped, pi] = await Promise.all([
