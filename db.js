@@ -5,8 +5,8 @@
  * ============================================================================
  */
 
-const SUPABASE_URL = 'https://the3dmanual.supabase.co';      // <-- PEGA TU URL AQUÍ
-const SUPABASE_ANON_KEY = 'sb_secret_BwXxvGvyDyEvftb6L6ywPQ_OKz1d_dp';               // <-- PEGA TU ANON KEY AQUÍ
+const SUPABASE_URL = 'https://tqxxtzugwojsxyefungm.supabase.co/rest/v1/';      // <-- PEGA TU URL AQUÍ
+const SUPABASE_ANON_KEY = 'sb_publishable_N4mvfO4IoRFph4FK9s3eYg_mjL1OWQo';               // <-- PEGA TU ANON KEY AQUÍ
 
 const DB3D = (() => {
   let supabaseClient = null;
