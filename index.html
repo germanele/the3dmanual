@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gestión Impresión 3D - Costos, Combos y Clientes (Uruguay) | SQLite App</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <datalist id="catalogo-nombres-list"></datalist>
+  <datalist id="clientes-list"></datalist>
+
+  <!-- TOPBAR -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-icon">3D</div>
+      <div>
+        <h1>Gestión Impresión 3D — Artículos, Cotizador, Combos &amp; Clientes (Uruguay)</h1>
+        <p>Motor SQLite en Navegador (WebAssembly) + Persistencia Automática + Tiempos hh:mm</p>
+      </div>
+    </div>
+
+    <div class="db-actions">
+      <span id="db-status-badge" class="db-status">⏳ Iniciando SQLite...</span>
+      <button class="btn btn-outline btn-sm" onclick="toggleSqlConsole()">🖥️ Consola SQL</button>
+      <button class="btn btn-primary btn-sm" onclick="exportarSQLite()">📥 Exportar .sqlite</button>
+      <label class="btn btn-outline btn-sm" style="cursor:pointer;">
+        📤 Importar .sqlite
+        <input type="file" accept=".sqlite,.db,.sqlite3" style="display:none;" onchange="importarSQLite(event)">
+      </label>
+      <button class="btn btn-danger btn-sm" onclick="resetearExcelOriginal()">🔄 Restaurar Datos Base</button>
+    </div>
+  </header>
+
+  <!-- CONSOLA SQL EN VIVO -->
+  <div class="container" style="padding-bottom:0;">
+    <div id="sql-console" class="sql-console">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+        <strong style="font-size:0.85rem; color:var(--accent);">Consola SQL Directa sobre SQLite en Memoria</strong>
+        <span style="font-size:0.75rem; color:var(--text-muted);">Tablas: articulos, parametros_base, escalas_reales, registro_costos, combos_guardados, pedidos, pedido_items</span>
+      </div>
+      <textarea id="sql-input">SELECT * FROM v_pedidos;</textarea>
+      <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+        <button class="btn btn-primary btn-sm" onclick="ejecutarSQLManual()">▶ Ejecutar SQL</button>
+        <button class="btn btn-outline btn-sm" onclick="document.getElementById('sql-input').value='SELECT * FROM articulos;'">Ver Artículos</button>
+        <button class="btn btn-outline btn-sm" onclick="document.getElementById('sql-input').value='SELECT * FROM escalas_reales;'">Ver _EscalasReales</button>
+        <button class="btn btn-outline btn-sm" onclick="document.getElementById('sql-input').value='SELECT * FROM parametros_base;'">Ver Parámetros</button>
+      </div>
+      <div id="sql-output" style="margin-top:0.65rem;"></div>
+    </div>
+  </div>
+
+  <!-- NAVEGACIÓN POR PESTAÑAS -->
+  <nav class="nav-tabs">
+    <button class="tab-btn active" data-target="tab-registro">📋 Artículos</button>
+    <button class="tab-btn" data-target="tab-cotizador">🧮 Cotizador Dinámico</button>
+    <button class="tab-btn" data-target="tab-combos">🎁 Armador de Combos</button>
+    <button class="tab-btn" data-target="tab-pedidos">👥 Gestión de Clientes y Pedidos</button>
+    <button class="tab-btn" data-target="tab-escalas">🔬 Mediciones Reales (Slicer)</button>
+    <button class="tab-btn" data-target="tab-parametros">⚙️ Parámetros Base (UY)</button>
+  </nav>
+
+  <main class="container">
+    <!-- ====================================================================
+         PESTAÑA 1: ARTÍCULOS (REGISTRO DE COSTOS)
+         ==================================================================== -->
+    <section id="tab-registro" class="tab-panel active">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2 class="card-title">Agregar Artículo / Lote al Catálogo</h2>
+            <p class="card-subtitle">Ingresá únicamente el nombre del artículo; el identificador secuencial <strong>ART-XXX</strong> se asigna automáticamente en la base de datos y no es modificable. Tiempos en formato <strong>hh:mm</strong>.</p>
+          </div>
+        </div>
+        <form class="form-row" onsubmit="handleAddRegistro(event)">
+          <div class="form-group">
+            <label>ID BD (Auto)</label>
+            <span id="reg-next-id" class="id-locked" title="Identificador secuencial asignado automáticamente por la base de datos">🔒 ART-007</span>
+          </div>
+          <div class="form-group" style="flex: 2; min-width: 220px;">
+            <label>Nombre del Artículo</label>
+            <input type="text" id="reg-art" list="catalogo-nombres-list" placeholder="Ej: Soporte Auriculares" oninput="previewNextArticuloId(this.value)" required>
+          </div>
+          <div class="form-group">
+            <label>Cantidad Lote</label>
+            <input type="number" id="reg-cant" min="1" step="1" value="1" required>
+          </div>
+          <div class="form-group">
+            <label>Factor Venta</label>
+            <select id="reg-factor">
+              <option value="1.5">1.5x (Mayorista)</option>
+              <option value="2">2.0x (Simple)</option>
+              <option value="2.5" selected>2.5x (Estándar)</option>
+              <option value="3">3.0x (Complejo)</option>
+              <option value="4">4.0x (Premium)</option>
+              <option value="5">5.0x (Exclusivo)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Gramos Lote (opc.)</label>
+            <input type="number" id="reg-gramos" min="0" step="0.01" placeholder="Slicer (g)">
+          </div>
+          <div class="form-group">
+            <label>Imp. Lote (hh:mm)</label>
+            <input type="text" id="reg-imp" class="hhmm-input" style="width:110px;" placeholder="02:30" onblur="handleHHMMBlur(this)">
+          </div>
+          <div class="form-group">
+            <label>Prep. Lote (hh:mm)</label>
+            <input type="text" id="reg-prep" class="hhmm-input" style="width:110px;" placeholder="00:05" onblur="handleHHMMBlur(this)">
+          </div>
+          <div class="form-group">
+            <label>Post. Unit (hh:mm)</label>
+            <input type="text" id="reg-post" class="hhmm-input" style="width:110px;" placeholder="00:00" onblur="handleHHMMBlur(this)">
+          </div>
+          <button type="submit" class="btn btn-primary">➕ Agregar Artículo</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2 class="card-title">Catálogo y Costos de Artículos Activos (+ Semáforo N=1)</h2>
+            <p class="card-subtitle">El ID (<strong>ART-XXX</strong>) es fijo a nivel de base de datos. Podés editar el nombre del artículo, cantidad o factor en tiempo real.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>ID (BD)</th>
+                <th>Nombre del Artículo</th>
+                <th class="num">Cant.</th>
+                <th class="num">Gramos Lote</th>
+                <th class="num">Imp. Lote</th>
+                <th class="num">Prep. Lote</th>
+                <th class="num">Post. Unit</th>
+                <th class="num">T. Total Unit</th>
+                <th class="num">Costo Base U.</th>
+                <th class="num">Costo Lote</th>
+                <th class="num">Factor</th>
+                <th class="num">Precio Venta U.</th>
+                <th class="num">Ganancia U.</th>
+                <th class="num">Margen</th>
+                <th class="num">Costo (si 1 u.)</th>
+                <th class="num">Venta (si 1 u.)</th>
+                <th class="center">Pto. Equilibrio</th>
+                <th class="center">Acción</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-registro"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====================================================================
+         PESTAÑA 2: COTIZADOR DINÁMICO POR CANTIDAD Y ESCALA
+         ==================================================================== -->
+    <section id="tab-cotizador" class="tab-panel">
+      <div class="grid-2">
+        <!-- Columna Izquierda: Configuración + Carga Rápida BambuStudio -->
+        <div>
+          <div class="card">
+            <div class="card-header">
+              <h2 class="card-title">1. Configuración de Cotización</h2>
+            </div>
+            <div class="form-row">
+              <div class="form-group" style="flex: 2; min-width: 220px;">
+                <label>Artículo del Catálogo</label>
+                <select id="cot-articulo" onchange="refreshAll()"></select>
+              </div>
+              <div class="form-group">
+                <label>Cantidad a Cotizar</label>
+                <input type="number" id="cot-cantidad" min="1" step="1" value="1000" oninput="refreshAll()">
+              </div>
+              <div class="form-group">
+                <label>Factor Multiplicador</label>
+                <select id="cot-factor" onchange="refreshAll()">
+                  <option value="1.5">1.5x</option>
+                  <option value="2">2.0x</option>
+                  <option value="2.5">2.5x</option>
+                  <option value="3" selected>3.0x</option>
+                  <option value="4">4.0x</option>
+                  <option value="5">5.0x</option>
+                </select>
+              </div>
+            </div>
+            <div style="margin-top: 0.9rem;">
+              <span style="font-size:0.8rem; color:var(--text-muted); margin-right:0.5rem;">Estado en Historial:</span>
+              <span id="cot-estado-historial" class="badge badge-amber"></span>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h2 class="card-title">2. Carga Rápida BambuStudio (Nueva Escala)</h2>
+                <p class="card-subtitle">Si sale alerta ámbar, cargá los datos reales del slicer (tiempos en formato <strong>hh:mm</strong>) para simular o guardarlos permanentemente.</p>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Gramos Lote (g)</label>
+                <input type="number" id="cot-manual-gramos" min="0" step="0.01" placeholder="Ej: 5200" oninput="refreshAll()">
+              </div>
+              <div class="form-group">
+                <label>Tiempo Imp. (hh:mm)</label>
+                <input type="text" id="cot-manual-imp" class="hhmm-input" style="width:120px;" placeholder="Ej: 390:00" onblur="handleHHMMBlur(this)" oninput="refreshAll()">
+              </div>
+              <div class="form-group">
+                <label>Prep. Opcional (hh:mm)</label>
+                <input type="text" id="cot-manual-prep" class="hhmm-input" style="width:120px;" placeholder="Ej: 00:09" onblur="handleHHMMBlur(this)" oninput="refreshAll()">
+              </div>
+              <button type="button" class="btn btn-success" onclick="guardarMedicionDesdeCotizador()">💾 Guardar en SQLite</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Columna Derecha: Desglose en Tiempo Real -->
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">3. Desglose de Tiempos y Costos en Tiempo Real</h2>
+            <span id="cot-origen-datos" class="badge badge-amber"></span>
+          </div>
+          <div class="breakdown-list">
+            <div class="breakdown-item">
+              <span class="breakdown-label">Gramos Activos del Lote</span>
+              <span class="breakdown-val" id="cot-gramos">-</span>
+            </div>
+            <div class="breakdown-item">
+              <span class="breakdown-label">Tiempo Impresión Activo Lote (hh:mm)</span>
+              <span class="breakdown-val" id="cot-imp-h">-</span>
+            </div>
+            <div class="breakdown-item">
+              <span class="breakdown-label">Tiempo Preparación Prorrateado / u. (hh:mm)</span>
+              <span class="breakdown-val" id="cot-prep-u">-</span>
+            </div>
+            <div class="breakdown-item">
+              <span class="breakdown-label">Tiempo Postprocesado Unitario (hh:mm)</span>
+              <span class="breakdown-val" id="cot-post-u">-</span>
+            </div>
+            <div class="breakdown-item">
+              <span class="breakdown-label">Tiempo Total por Unidad / Lote (hh:mm)</span>
+              <span class="breakdown-val" id="cot-tiempo-total">-</span>
+            </div>
+            <div class="breakdown-item highlight">
+              <span class="breakdown-label">Costo Base Unitario</span>
+              <span class="breakdown-val" id="cot-costo-unit">-</span>
+            </div>
+            <div class="breakdown-item">
+              <span class="breakdown-label">Costo Base Total del Lote</span>
+              <span class="breakdown-val" id="cot-costo-lote">-</span>
+            </div>
+            <div class="breakdown-item highlight">
+              <span class="breakdown-label">Precio de Venta Unitario Sugerido</span>
+              <span class="breakdown-val" style="color: var(--accent);" id="cot-precio-unit">-</span>
+            </div>
+            <div class="breakdown-item">
+              <span class="breakdown-label">Precio de Venta Total del Lote</span>
+              <span class="breakdown-val" style="color: var(--accent);" id="cot-precio-lote">-</span>
+            </div>
+            <div class="breakdown-item">
+              <span class="breakdown-label">Ganancia Neta (Unitaria / Lote)</span>
+              <span class="breakdown-val" style="color: var(--green-text);" id="cot-ganancia">-</span>
+            </div>
+            <div class="breakdown-item">
+              <span class="breakdown-label">Comparativa Venta 1 Unidad (N=1)</span>
+              <span class="breakdown-val" id="cot-comp-1u">-</span>
+            </div>
+            <div class="breakdown-item">
+              <span class="breakdown-label">Punto de Equilibrio del Lote</span>
+              <span class="breakdown-val" id="cot-pe">-</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tabla de Escala Automática + Gráfico -->
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">4. Tabla de Escala Automática (1, 3, 5, 10 y 20 u.)</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th class="num">Escala</th>
+                  <th>Origen</th>
+                  <th class="num">Prep. / Pieza</th>
+                  <th class="num">Costo Base U.</th>
+                  <th class="num">Precio Venta U.</th>
+                  <th class="num">Costo Lote</th>
+                  <th class="center">Pto. Equilibrio</th>
+                </tr>
+              </thead>
+              <tbody id="tbody-cot-escalas"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Curva de Costo Base vs. Precio de Venta por Escala</h2>
+          </div>
+          <div class="chart-container">
+            <canvas id="chart-escalas"></canvas>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====================================================================
+         PESTAÑA 3: ARMADOR DINÁMICO DE COMBOS POR PRESUPUESTO
+         ==================================================================== -->
+    <section id="tab-combos" class="tab-panel">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2 class="card-title">Armador Dinámico de Combos por Presupuesto del Cliente</h2>
+            <p class="card-subtitle">Asignale un nombre a tu combo y guardalo en SQLite para luego reutilizarlo directamente al crear pedidos de clientes.</p>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex: 1.5; min-width: 210px;">
+              <label>Nombre del Combo</label>
+              <input type="text" id="cmb-nombre" placeholder="Ej: Combo Fidgets Escolar">
+            </div>
+            <div class="form-group">
+              <label>Presupuesto Cliente ($ UYU)</label>
+              <input type="number" id="cmb-presupuesto" min="0" step="1" value="3278" oninput="updateComboConfig()">
+            </div>
+            <div class="form-group">
+              <label>Factor de Ganancia Combo</label>
+              <select id="cmb-factor" onchange="updateComboConfig()">
+                <option value="Según Registro de Costos">Según Registro de Costos</option>
+                <option value="1.5">1.5x</option>
+                <option value="2" selected>2.0x</option>
+                <option value="2.5">2.5x</option>
+                <option value="3">3.0x</option>
+                <option value="4">4.0x</option>
+                <option value="5">5.0x</option>
+              </select>
+            </div>
+            <button type="button" class="btn btn-primary" onclick="addComboLinea()">➕ Agregar Artículo al Combo</button>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Artículo a Incluir</th>
+                <th class="num">Factor</th>
+                <th class="num">Costo Ref (1 u.)</th>
+                <th class="num">Precio Ref (1 u.)</th>
+                <th class="num">Opción 1 (Cant.)</th>
+                <th class="num">Opción 2 (Cant.)</th>
+                <th class="num">Opción 3 (Cant.)</th>
+                <th class="num">Tu Armado Manual</th>
+                <th class="center">Quitar</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-combo-items"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">Opciones de Combos Calculadas en Tiempo Real</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Opción</th>
+                <th>Composición del Combo</th>
+                <th class="num">Piezas</th>
+                <th class="num">Precio Venta</th>
+                <th class="num">Costo Prod.</th>
+                <th class="num">Ganancia Neta</th>
+                <th class="num">Saldo vs Presup.</th>
+                <th class="num">Tiempo Total (hh:mm)</th>
+                <th>Origen</th>
+                <th class="center">Guardar</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-combo-opciones"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">Historial de Combos Guardados (SQLite)</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Nombre del Combo</th>
+                <th class="num">Presupuesto</th>
+                <th>Opción Elegida</th>
+                <th>Composición</th>
+                <th class="num">Precio Venta</th>
+                <th class="num">Costo Prod.</th>
+                <th class="num">Saldo</th>
+                <th>Estado</th>
+                <th class="center">Eliminar</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-combo-historial"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====================================================================
+         PESTAÑA 4: GESTIÓN DE CLIENTES Y PEDIDOS
+         ==================================================================== -->
+    <section id="tab-pedidos" class="tab-panel">
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-label">Total Pedidos</div>
+          <div class="kpi-value" id="kpi-ped-total">0</div>
+          <div class="kpi-sub">Registrados en SQLite</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Ingresos Entregados</div>
+          <div class="kpi-value" style="color: var(--green-text);" id="kpi-ped-entregado">$0.00</div>
+          <div class="kpi-sub">Pedidos completados</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">En Producción / Pendientes</div>
+          <div class="kpi-value" style="color: var(--amber-text);" id="kpi-ped-curso">$0.00</div>
+          <div class="kpi-sub">Cartera activa</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2 class="card-title">Nuevo Pedido de Cliente (Multi-Artículo y Combos Guardados)</h2>
+            <p class="card-subtitle">Agregá uno o más artículos del catálogo y/o combos guardados al mismo pedido del cliente.</p>
+          </div>
+        </div>
+        <form onsubmit="handleAddPedido(event)">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Fecha</label>
+              <input type="date" id="ped-fecha" required>
+            </div>
+            <div class="form-group" style="flex: 2; min-width: 220px;">
+              <label>Nombre del Cliente</label>
+              <input type="text" id="ped-cliente" list="clientes-list" placeholder="Ej: María Fernández" required>
+            </div>
+            <div class="form-group" style="min-width: 180px;">
+              <label>Estado del Pedido</label>
+              <select id="ped-estado">
+                <option value="Pendiente">Pendiente</option>
+                <option value="En Producción">En Producción</option>
+                <option value="Listo para Entrega">Listo para Entrega</option>
+                <option value="Entregado">Entregado</option>
+                <option value="Cancelado">Cancelado</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="order-items-box">
+            <div class="order-items-header">
+              <h3>Ítems incluidos en este pedido</h3>
+              <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                <button type="button" class="btn btn-outline btn-sm" onclick="addPedidoDraftLinea('articulo')">➕ Agregar Artículo</button>
+                <button type="button" class="btn btn-outline btn-sm" onclick="addPedidoDraftLinea('combo')">🎁 Agregar Combo Guardado</button>
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width:120px;">Tipo</th>
+                    <th>Artículo o Combo Guardado</th>
+                    <th class="num" style="width:110px;">Cantidad</th>
+                    <th class="num" style="width:140px;">Precio Unit. ($ UYU)</th>
+                    <th class="num" style="width:140px;">Subtotal</th>
+                    <th class="center" style="width:70px;">Quitar</th>
+                  </tr>
+                </thead>
+                <tbody id="tbody-ped-draft"></tbody>
+              </table>
+            </div>
+
+            <div class="order-total-bar">
+              <div style="font-size:0.9rem; color:var(--text-muted);">
+                Resumen del Pedido: <strong id="ped-draft-resumen" style="color:var(--text);">0 ítems</strong>
+              </div>
+              <div style="display:flex; align-items:center; gap:1rem;">
+                <span style="font-size:1.05rem; font-weight:800; color:var(--accent);" id="ped-draft-total">Total: $0.00</span>
+                <button type="submit" class="btn btn-primary">✅ Crear Pedido</button>
+              </div>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">Cartera de Clientes y Pedidos (Edición en Tiempo Real)</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID Pedido</th>
+                <th>Fecha</th>
+                <th>Cliente</th>
+                <th>Artículos y Combos del Pedido</th>
+                <th class="num">Total ($ UYU)</th>
+                <th>Estado</th>
+                <th class="center">Eliminar</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-pedidos"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====================================================================
+         PESTAÑA 5: MEDICIONES REALES (_EscalasReales)
+         ==================================================================== -->
+    <section id="tab-escalas" class="tab-panel">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2 class="card-title">Registrar Nueva Medición Real de BambuStudio (_EscalasReales)</h2>
+            <p class="card-subtitle">Ingresá el nombre del artículo (su ID <strong>ART-XXX</strong> se resuelve o crea automáticamente en la BD) y los tiempos en formato <strong>hh:mm</strong>.</p>
+          </div>
+        </div>
+        <form class="form-row" onsubmit="handleAddEscalaReal(event)">
+          <div class="form-group">
+            <label>Fecha</label>
+            <input type="date" id="esc-fecha" required>
+          </div>
+          <div class="form-group" style="flex: 2; min-width: 220px;">
+            <label>Nombre del Artículo</label>
+            <input type="text" id="esc-art" list="catalogo-nombres-list" placeholder="Ej: Llavero Sindicato" required>
+          </div>
+          <div class="form-group">
+            <label>Cantidad Lote</label>
+            <input type="number" id="esc-cant" min="1" step="1" value="1" required>
+          </div>
+          <div class="form-group">
+            <label>Gramos Lote (g)</label>
+            <input type="number" id="esc-gramos" min="0.01" step="0.01" required>
+          </div>
+          <div class="form-group">
+            <label>Imp. Lote (hh:mm)</label>
+            <input type="text" id="esc-imp" class="hhmm-input" style="width:110px;" placeholder="01:30" onblur="handleHHMMBlur(this)" required>
+          </div>
+          <div class="form-group">
+            <label>Prep. Lote (hh:mm)</label>
+            <input type="text" id="esc-prep" class="hhmm-input" style="width:110px;" value="00:05" onblur="handleHHMMBlur(this)">
+          </div>
+          <div class="form-group">
+            <label>Post. Unit (hh:mm)</label>
+            <input type="text" id="esc-post" class="hhmm-input" style="width:110px;" value="00:00" onblur="handleHHMMBlur(this)">
+          </div>
+          <div class="form-group">
+            <label>Factor Ref.</label>
+            <select id="esc-factor">
+              <option value="1.5">1.5x</option>
+              <option value="2">2.0x</option>
+              <option value="2.5" selected>2.5x</option>
+              <option value="3">3.0x</option>
+              <option value="4">4.0x</option>
+              <option value="5">5.0x</option>
+            </select>
+          </div>
+          <button type="submit" class="btn btn-success">💾 Guardar Medición</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">Base de Mediciones Reales en Slicer (_EscalasReales)</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>ID (BD)</th>
+                <th>Artículo</th>
+                <th class="num">Cantidad</th>
+                <th class="num">Gramos Lote (g)</th>
+                <th class="num">Imp. Lote (hh:mm)</th>
+                <th class="num">Prep. Lote (hh:mm)</th>
+                <th class="num">Post. Unit (hh:mm)</th>
+                <th class="num">Costo Base U.</th>
+                <th class="num">Precio Venta Ref.</th>
+                <th class="center">Eliminar</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-escalas-reales"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====================================================================
+         PESTAÑA 6: PARÁMETROS BASE (URUGUAY)
+         ==================================================================== -->
+    <section id="tab-parametros" class="tab-panel">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2 class="card-title">1. Parámetros Operativos de Referencia (Uruguay)</h2>
+            <p class="card-subtitle">Modificá cualquier valor (ej. Cotización Dólar o Tarifa UTE) y todos los costos y precios se actualizarán instantáneamente.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Parámetro Operativo</th>
+                <th class="num">Valor Referencia</th>
+                <th>Unidad</th>
+                <th>Moneda / Base</th>
+                <th>Notas y Criterio de Cálculo</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-parametros"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">2. Guía de Factores Multiplicadores de Venta</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Factor</th>
+                <th class="num">Margen Bruto (= 1 - 1/Factor)</th>
+                <th>Tipo de Pedido / Escenario</th>
+                <th>Recomendación de Aplicación</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>1.5x</strong></td>
+                <td class="num">33.3%</td>
+                <td>Mayorista / Grandes Lotes</td>
+                <td>Producción en serie, souvenirs y pedidos corporativos en cantidad</td>
+              </tr>
+              <tr>
+                <td><strong>2.0x</strong></td>
+                <td class="num">50.0%</td>
+                <td>Piezas Simples / Bajo Requisito</td>
+                <td>Modelos rápidos sin post-procesado ni requerimientos técnicos</td>
+              </tr>
+              <tr>
+                <td><strong>2.5x</strong></td>
+                <td class="num">60.0%</td>
+                <td>Estándar / Consumidor Final</td>
+                <td>Trabajos unitarios habituales, decoración, prototipos y repuestos</td>
+              </tr>
+              <tr>
+                <td><strong>3.0x</strong></td>
+                <td class="num">66.7%</td>
+                <td>Personalizado / Alta Complejidad</td>
+                <td>Diseño 3D a medida, materiales técnicos (ABS, Nylon) y urgencias</td>
+              </tr>
+              <tr>
+                <td><strong>4.0x</strong></td>
+                <td class="num">75.0%</td>
+                <td>Premium / Series Cortas Especiales</td>
+                <td>Piezas de alto valor agregado, acabados especiales o baja tirada</td>
+              </tr>
+              <tr>
+                <td><strong>5.0x</strong></td>
+                <td class="num">80.0%</td>
+                <td>Exclusivo / Diseño Único</td>
+                <td>Prototipos exclusivos, desarrollo a medida y piezas únicas de colección</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="engine.js"></script>
+  <script src="db.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
