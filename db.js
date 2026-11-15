@@ -1,598 +1,202 @@
 /**
  * ============================================================================
- * CAPA DE PERSISTENCIA SQLITE EN NAVEGADOR (sql.js WebAssembly + localStorage)
+ * CAPA DE PERSISTENCIA SUPABASE (PostgreSQL Cloud + Caché Local Síncrona)
  * Gestión Impresión 3D - Costos, Artículos, Combos y Clientes (Uruguay)
  * ============================================================================
  */
 
-const SEED_DATA = {
-  "schema": `PRAGMA foreign_keys = ON;
-
-CREATE TABLE IF NOT EXISTS parametros_base (
-    clave TEXT PRIMARY KEY,
-    parametro TEXT NOT NULL,
-    valor REAL NOT NULL,
-    unidad TEXT NOT NULL,
-    base TEXT NOT NULL,
-    notas TEXT
-);
-
-CREATE TABLE IF NOT EXISTS articulos (
-    id_articulo TEXT PRIMARY KEY,
-    nombre TEXT NOT NULL UNIQUE
-);
-
-CREATE TRIGGER IF NOT EXISTS trg_articulos_no_update_id
-BEFORE UPDATE OF id_articulo ON articulos
-BEGIN
-    SELECT RAISE(ABORT, 'El identificador id_articulo (ART-XXX) es generado por la base de datos y no es modificable.');
-END;
-
-CREATE TABLE IF NOT EXISTS escalas_reales (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    fecha TEXT NOT NULL,
-    id_articulo TEXT NOT NULL REFERENCES articulos(id_articulo),
-    cantidad INTEGER NOT NULL CHECK(cantidad >= 1),
-    gramos_lote REAL NOT NULL CHECK(gramos_lote >= 0),
-    tiempo_impresion_lote_h REAL NOT NULL CHECK(tiempo_impresion_lote_h >= 0),
-    tiempo_preparacion_lote_h REAL NOT NULL CHECK(tiempo_preparacion_lote_h >= 0),
-    tiempo_postprocesado_unit_h REAL NOT NULL CHECK(tiempo_postprocesado_unit_h >= 0),
-    factor_multiplicador REAL NOT NULL DEFAULT 2.5
-);
-
-CREATE TABLE IF NOT EXISTS registro_costos (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    id_articulo TEXT NOT NULL REFERENCES articulos(id_articulo),
-    cantidad INTEGER NOT NULL CHECK(cantidad >= 1),
-    factor_multiplicador REAL NOT NULL DEFAULT 2.5
-);
-
-CREATE TABLE IF NOT EXISTS combos_guardados (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    fecha TEXT NOT NULL,
-    nombre_combo TEXT NOT NULL,
-    presupuesto REAL NOT NULL,
-    opcion_elegida TEXT NOT NULL,
-    composicion TEXT NOT NULL,
-    precio_venta REAL NOT NULL,
-    costo_produccion REAL NOT NULL,
-    saldo_presupuesto REAL NOT NULL,
-    estado TEXT NOT NULL DEFAULT '✅ Guardado'
-);
-
-CREATE TABLE IF NOT EXISTS pedidos (
-    id TEXT PRIMARY KEY,
-    fecha TEXT NOT NULL,
-    cliente TEXT NOT NULL,
-    estado TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS pedido_items (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    pedido_id TEXT NOT NULL REFERENCES pedidos(id) ON DELETE CASCADE,
-    tipo_item TEXT NOT NULL DEFAULT 'articulo',
-    ref_id TEXT NOT NULL,
-    descripcion TEXT NOT NULL,
-    cantidad INTEGER NOT NULL CHECK(cantidad >= 1),
-    precio_unitario REAL NOT NULL CHECK(precio_unitario >= 0)
-);
-
-CREATE VIEW IF NOT EXISTS v_catalogo_articulos AS
-SELECT
-    a.id_articulo,
-    a.nombre,
-    (a.id_articulo || ' | ' || a.nombre) AS articulo
-FROM articulos a
-ORDER BY a.id_articulo ASC;
-
-CREATE VIEW IF NOT EXISTS v_pedidos AS
-SELECT
-    p.id,
-    p.fecha,
-    p.cliente,
-    p.estado,
-    COUNT(pi.id) AS cant_items,
-    COALESCE(SUM(pi.cantidad), 0) AS total_piezas,
-    ROUND(COALESCE(SUM(pi.cantidad * pi.precio_unitario), 0), 2) AS total_uyu
-FROM pedidos p
-LEFT JOIN pedido_items pi ON pi.pedido_id = p.id
-GROUP BY p.id, p.fecha, p.cliente, p.estado;
-`,
-  "parametros_base": [
-    [
-      "energia_kwh",
-      "Energía eléctrica",
-      11.0,
-      "$ UYU / kWh",
-      "UYU",
-      "Tarifa media residencial / comercial UTE en Uruguay"
-    ],
-    [
-      "desgaste_maquina_h",
-      "Desgaste de máquina",
-      10.0,
-      "$ UYU / h",
-      "UYU",
-      "Amortización de equipo, boquillas y mantenimiento preventivo"
-    ],
-    [
-      "tiempo_manual_h",
-      "Tiempo manual",
-      250.0,
-      "$ UYU / h",
-      "UYU",
-      "Mano de obra técnica: preparación, calibración y post-procesado"
-    ],
-    [
-      "precio_plastico_usd_kg",
-      "Precio plástico por defecto",
-      15.0,
-      "USD / kg",
-      "USD",
-      "Costo promedio de bobina estándar (PLA / PETG) en plaza local"
-    ],
-    [
-      "consumo_maquina_w",
-      "Consumo de máquina por defecto",
-      110.0,
-      "W",
-      "Watts",
-      "Potencia eléctrica media consumida por la impresora 3D"
-    ],
-    [
-      "factor_defecto",
-      "Factor multiplicador por defecto",
-      2.5,
-      "x",
-      "Ratio",
-      "Multiplicador estándar sobre costo base para venta minorista"
-    ],
-    [
-      "cotizacion_dolar",
-      "Cotización Dólar (Venta)",
-      41.5,
-      "$ UYU / USD",
-      "UYU",
-      "Tipo de cambio de referencia editable (el asistente lo actualiza con la cotización vigente al calcular)"
-    ]
-  ],
-  "articulos": [
-    ["ART-001", "Mate Autocebante"],
-    ["ART-002", "Fidget Manzana"],
-    ["ART-003", "Fidget Hexagonal"],
-    ["ART-004", "Fidget Cubo Infinito"],
-    ["ART-005", "Fidget Bola"],
-    ["ART-006", "Llavero Sindicato"]
-  ],
-  "escalas_reales": [
-    ["2024-05-15", "ART-001", 1, 45.0, 2.5, 0.25, 0.1, 1.5],
-    ["2026-11-13", "ART-002", 1, 19.7, 1.233333333, 0.08333333333, 0.0, 2.5],
-    ["2026-11-13", "ART-003", 1, 44.08, 1.616667, 0.083333, 0.0, 3.0],
-    ["2026-11-13", "ART-004", 1, 28.16, 1.383333333, 0.08333333333, 0.0, 2.0],
-    ["2026-11-14", "ART-005", 1, 77.89, 4.3, 0.08333333333, 0.0, 2.0],
-    ["2026-11-14", "ART-001", 5, 225.0, 12.5, 0.25, 0.1, 1.5],
-    ["2026-11-14", "ART-005", 3, 233.55, 12.35, 0.08333333333, 0.0, 2.0],
-    ["2026-11-14", "ART-006", 13, 73.31, 5.333333333, 0.08333333333, 0.0, 2.0]
-  ],
-  "registro_costos": [
-    ["ART-001", 1, 1.5],
-    ["ART-002", 1, 2.5],
-    ["ART-003", 1, 3.0],
-    ["ART-004", 1, 3.0],
-    ["ART-005", 3, 1.5],
-    ["ART-006", 13, 3.0]
-  ],
-  "combos_guardados": [
-    [
-      "2026-11-13",
-      "Combo Variado Mix",
-      3278.0,
-      "Opción 2 (Máx. Cantidad)",
-      "Fidget Cubo Infinito (ART-004) x8, Fidget Manzana (ART-002) x7, Mate Autocebante (ART-001) x5, Fidget Hexagonal (ART-003) x3",
-      3273.89,
-      1676.82,
-      4.11,
-      "✅ Guardado"
-    ],
-    [
-      "2026-11-13",
-      "Pack Fidgets Alta Rentabilidad",
-      3278.0,
-      "Opción 3 (Máx. Ganancia)",
-      "Fidget Manzana (ART-002) x11, Fidget Hexagonal (ART-003) x5, Fidget Cubo Infinito (ART-004) x11",
-      3269.78,
-      1440.69,
-      8.22,
-      "✅ Guardado"
-    ]
-  ],
-  "pedidos": [
-    ["PED-001", "2024-05-18", "Juan Pérez", "Entregado"],
-    ["PED-002", "2024-05-20", "Lucía Silva", "En Producción"],
-    ["PED-003", "2024-05-22", "Martín Rodríguez", "Pendiente"],
-    ["PED-004", "2024-05-25", "Valentina Gómez", "Listo para Entrega"],
-    ["PED-005", "2024-05-28", "Tech Solutions UY", "Entregado"],
-    ["PED-006", "2024-05-30", "Estudio Creativo", "En Producción"]
-  ],
-  "pedido_items": [
-    ["PED-001", "articulo", "ART-001", "Mate Autocebante", 2, 215.31],
-    ["PED-002", "articulo", "ART-003", "Fidget Hexagonal", 5, 199.2],
-    ["PED-003", "articulo", "ART-006", "Llavero Sindicato", 20, 28.92],
-    ["PED-004", "articulo", "ART-004", "Fidget Cubo Infinito", 3, 161.61],
-    ["PED-005", "articulo", "ART-002", "Fidget Manzana", 10, 117.3],
-    ["PED-006", "articulo", "ART-005", "Fidget Bola", 4, 151.92]
-  ]
-};
+const SUPABASE_URL = 'https://the3dmanual.supabase.co';      // <-- PEGA TU URL AQUÍ
+const SUPABASE_ANON_KEY = 'sb_secret_BwXxvGvyDyEvftb6L6ywPQ_OKz1d_dp';               // <-- PEGA TU ANON KEY AQUÍ
 
 const DB3D = (() => {
-  const STORAGE_KEY = 'gestion_impresion_3d_sqlite_b64_v2';
-  let SQL = null;
-  let db = null;
+  let supabaseClient = null;
+  
+  let cache = {
+    parametros_base: [],
+    articulos: [],
+    escalas_reales: [],
+    registro_costos: [],
+    combos_guardados: [],
+    pedidos: [],
+    pedido_items: []
+  };
 
-  function uint8ToBase64(bytes) {
-    let binary = '';
-    const chunkSize = 0x8000;
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  async function init() {
+    if (typeof supabase === 'undefined') {
+      throw new Error('No se pudo cargar la librería de Supabase.');
     }
-    return btoa(binary);
+    supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    await reloadCache();
   }
 
-  function base64ToUint8(base64) {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
+  async function reloadCache() {
+    const [p, a, er, rc, cg, ped, pi] = await Promise.all([
+      supabaseClient.from('parametros_base').select('*'),
+      supabaseClient.from('articulos').select('*').order('id_articulo', { ascending: true }),
+      supabaseClient.from('escalas_reales').select('*').order('id', { ascending: true }),
+      supabaseClient.from('registro_costos').select('*').order('id', { ascending: true }),
+      supabaseClient.from('combos_guardados').select('*').order('id', { ascending: false }),
+      supabaseClient.from('pedidos').select('*').order('fecha', { ascending: false }),
+      supabaseClient.from('pedido_items').select('*').order('id', { ascending: true })
+    ]);
+
+    cache.parametros_base = p.data || [];
+    cache.articulos = a.data || [];
+    cache.escalas_reales = er.data || [];
+    cache.registro_costos = rc.data || [];
+    cache.combos_guardados = cg.data || [];
+    cache.pedidos = ped.data || [];
+    cache.pedido_items = pi.data || [];
   }
 
-  function saveToStorage() {
-    if (!db) return;
-    const data = db.export();
-    localStorage.setItem(STORAGE_KEY, uint8ToBase64(data));
+  function queryAll(sql, params = []) {
+    const cleanSql = sql.trim().toLowerCase();
+
+    if (cleanSql.includes('from parametros_base')) return [...cache.parametros_base];
+    if (cleanSql.includes('from articulos')) return [...cache.articulos].sort((x, y) => x.id_articulo.localeCompare(y.id_articulo));
+    if (cleanSql.includes('from escalas_reales') && cleanSql.includes('join articulos')) {
+      return cache.escalas_reales.map(e => {
+        const art = cache.articulos.find(a => a.id_articulo === e.id_articulo);
+        return { ...e, nombre_articulo: art ? art.nombre : '' };
+      });
+    }
+    if (cleanSql.includes('from escalas_reales')) return [...cache.escalas_reales];
+    if (cleanSql.includes('from registro_costos') && cleanSql.includes('join articulos')) {
+      return cache.registro_costos.map(r => {
+        const art = cache.articulos.find(a => a.id_articulo === r.id_articulo);
+        return { ...r, nombre_articulo: art ? art.nombre : '' };
+      });
+    }
+    if (cleanSql.includes('from registro_costos')) return [...cache.registro_costos];
+    if (cleanSql.includes('from combos_guardados')) return [...cache.combos_guardados].sort((x, y) => y.id - x.id);
+    if (cleanSql.includes('from pedidos')) return [...cache.pedidos].sort((x, y) => new Date(y.fecha) - new Date(x.fecha));
+    if (cleanSql.includes('from pedido_items')) return [...cache.pedido_items];
+    if (cleanSql.includes('select id_articulo from articulos where lower(trim(nombre))')) {
+      const target = params[0] ? params[0].toLowerCase().trim() : '';
+      return cache.articulos.filter(a => a.nombre.toLowerCase().trim() === target);
+    }
+    if (cleanSql.includes('select id from escalas_reales where id_articulo')) {
+      return cache.escalas_reales.filter(e => e.id_articulo === params[0] && e.cantidad === params[1]);
+    }
+    if (cleanSql.includes('select id from pedidos')) {
+      return cache.pedidos.map(p => ({ id: p.id }));
+    }
+    return [];
   }
 
-  function queryAllOn(database, sql, params = []) {
-    const stmt = database.prepare(sql);
-    stmt.bind(params);
-    const rows = [];
-    while (stmt.step()) {
-      rows.push(stmt.getAsObject());
-    }
-    stmt.free();
-    return rows;
-  }
-
-  function seedDatabase(database) {
-    database.run(SEED_DATA.schema);
-
-    const stmtParam = database.prepare(
-      'INSERT INTO parametros_base (clave, parametro, valor, unidad, base, notas) VALUES (?, ?, ?, ?, ?, ?)'
-    );
-    for (const r of SEED_DATA.parametros_base) {
-      stmtParam.run(r);
-    }
-    stmtParam.free();
-
-    const stmtArt = database.prepare(
-      'INSERT INTO articulos (id_articulo, nombre) VALUES (?, ?)'
-    );
-    for (const r of SEED_DATA.articulos) {
-      stmtArt.run(r);
-    }
-    stmtArt.free();
-
-    const stmtEsc = database.prepare(`
-      INSERT INTO escalas_reales (
-        fecha, id_articulo, cantidad, gramos_lote, tiempo_impresion_lote_h,
-        tiempo_preparacion_lote_h, tiempo_postprocesado_unit_h, factor_multiplicador
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    for (const r of SEED_DATA.escalas_reales) {
-      stmtEsc.run(r);
-    }
-    stmtEsc.free();
-
-    const stmtReg = database.prepare(
-      'INSERT INTO registro_costos (id_articulo, cantidad, factor_multiplicador) VALUES (?, ?, ?)'
-    );
-    for (const r of SEED_DATA.registro_costos) {
-      stmtReg.run(r);
-    }
-    stmtReg.free();
-
-    const stmtCmb = database.prepare(`
-      INSERT INTO combos_guardados (
-        fecha, nombre_combo, presupuesto, opcion_elegida, composicion,
-        precio_venta, costo_produccion, saldo_presupuesto, estado
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    for (const r of SEED_DATA.combos_guardados) {
-      stmtCmb.run(r);
-    }
-    stmtCmb.free();
-
-    const stmtPed = database.prepare(
-      'INSERT INTO pedidos (id, fecha, cliente, estado) VALUES (?, ?, ?, ?)'
-    );
-    for (const r of SEED_DATA.pedidos) {
-      stmtPed.run(r);
-    }
-    stmtPed.free();
-
-    const stmtPedItem = database.prepare(`
-      INSERT INTO pedido_items (pedido_id, tipo_item, ref_id, descripcion, cantidad, precio_unitario)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-    for (const r of SEED_DATA.pedido_items) {
-      stmtPedItem.run(r);
-    }
-    stmtPedItem.free();
-  }
-
-  /**
-   * Calcula el siguiente identificador secuencial ART-XXX a nivel de base de datos
-   */
-  function getNextArticuloIdOn(database) {
-    let maxNum = 0;
-    const tablas = [
-      { sql: 'SELECT id_articulo AS code FROM articulos' }
-    ];
-    for (const t of tablas) {
-      try {
-        const rows = queryAllOn(database, t.sql);
-        for (const r of rows) {
-          const m = String(r.code || '').match(/^ART-(\d+)$/i);
-          if (m) maxNum = Math.max(maxNum, parseInt(m[1], 10));
+  async function run(sql, params = []) {
+    const s = sql.trim().toLowerCase();
+    try {
+      if (s.startsWith('update articulos set nombre')) {
+        await supabaseClient.from('articulos').update({ nombre: params[0] }).eq('id_articulo', params[1]);
+      } else if (s.startsWith('update registro_costos set cantidad')) {
+        await supabaseClient.from('registro_costos').update({ cantidad: params[0] }).eq('id', params[1]);
+      } else if (s.startsWith('update registro_costos set factor_multiplicador')) {
+        await supabaseClient.from('registro_costos').update({ factor_multiplicador: params[0] }).eq('id', params[1]);
+      } else if (s.startsWith('delete from registro_costos')) {
+        await supabaseClient.from('registro_costos').delete().eq('id', params[0]);
+      } else if (s.startsWith('insert into registro_costos')) {
+        await supabaseClient.from('registro_costos').insert({ id_articulo: params[0], cantidad: params[1], factor_multiplicador: params[2] });
+      } else if (s.startsWith('update escalas_reales set')) {
+        if (s.includes('gramos_lote')) {
+          await supabaseClient.from('escalas_reales').update({ gramos_lote: params[0] }).eq('id', params[1]);
+        } else if (s.includes('tiempo_impresion_lote_h')) {
+          await supabaseClient.from('escalas_reales').update({ tiempo_impresion_lote_h: params[0] }).eq('id', params[1]);
+        } else if (s.includes('tiempo_preparacion_lote_h')) {
+          await supabaseClient.from('escalas_reales').update({ tiempo_preparacion_lote_h: params[0] }).eq('id', params[1]);
+        } else if (s.includes('tiempo_postprocesado_unit_h')) {
+          await supabaseClient.from('escalas_reales').update({ tiempo_postprocesado_unit_h: params[0] }).eq('id', params[1]);
+        } else {
+          await supabaseClient.from('escalas_reales').update({
+            fecha: params[0], gramos_lote: params[1], tiempo_impresion_lote_h: params[2],
+            tiempo_preparacion_lote_h: params[3], factor_multiplicador: params[4]
+          }).eq('id', params[5]);
         }
-      } catch (_) {}
+      } else if (s.startsWith('insert into escalas_reales')) {
+        await supabaseClient.from('escalas_reales').insert({
+          fecha: params[0], id_articulo: params[1], cantidad: params[2],
+          gramos_lote: params[3], tiempo_impresion_lote_h: params[4],
+          tiempo_preparacion_lote_h: params[5], tiempo_postprocesado_unit_h: params[6],
+          factor_multiplicador: params[7]
+        });
+      } else if (s.startsWith('delete from escalas_reales')) {
+        await supabaseClient.from('escalas_reales').delete().eq('id', params[0]);
+      } else if (s.startsWith('update combos_guardados set nombre_combo')) {
+        await supabaseClient.from('combos_guardados').update({ nombre_combo: params[0] }).eq('id', params[1]);
+      } else if (s.startsWith('delete from combos_guardados')) {
+        await supabaseClient.from('combos_guardados').delete().eq('id', params[0]);
+      } else if (s.startsWith('insert into combos_guardados')) {
+        await supabaseClient.from('combos_guardados').insert({
+          fecha: params[0], nombre_combo: params[1], presupuesto: params[2],
+          opcion_elegida: params[3], composicion: params[4], precio_venta: params[5],
+          costo_produccion: params[6], saldo_presupuesto: params[7], estado: params[8]
+        });
+      } else if (s.startsWith('insert into pedidos')) {
+        await supabaseClient.from('pedidos').insert({ id: params[0], fecha: params[1], cliente: params[2], estado: params[3] });
+      } else if (s.startsWith('insert into pedido_items')) {
+        await supabaseClient.from('pedido_items').insert({
+          pedido_id: params[0], tipo_item: params[1], ref_id: params[2],
+          descripcion: params[3], cantidad: params[4], precio_unitario: params[5]
+        });
+      } else if (s.startsWith('update pedido_items set cantidad')) {
+        await supabaseClient.from('pedido_items').update({ cantidad: params[0] }).eq('id', params[1]);
+      } else if (s.startsWith('update pedido_items set precio_unitario')) {
+        await supabaseClient.from('pedido_items').update({ precio_unitario: params[0] }).eq('id', params[1]);
+      } else if (s.startsWith('delete from pedido_items where id')) {
+        await supabaseClient.from('pedido_items').delete().eq('id', params[0]);
+      } else if (s.startsWith('update pedidos set estado')) {
+        await supabaseClient.from('pedidos').update({ estado: params[0] }).eq('id', params[1]);
+      } else if (s.startsWith('delete from pedido_items where pedido_id')) {
+        await supabaseClient.from('pedido_items').delete().eq('pedido_id', params[0]);
+      } else if (s.startsWith('delete from pedidos')) {
+        await supabaseClient.from('pedidos').delete().eq('id', params[0]);
+      } else if (s.startsWith('update parametros_base set valor')) {
+        await supabaseClient.from('parametros_base').update({ valor: params[0] }).eq('clave', params[1]);
+      }
+      await reloadCache();
+    } catch (err) {
+      console.error('Error sincronizando con Supabase:', err);
+    }
+  }
+
+  function getNextArticuloId() {
+    let maxNum = 0;
+    for (const a of cache.articulos) {
+      const m = String(a.id_articulo || '').match(/^ART-(\d+)$/i);
+      if (m) maxNum = Math.max(maxNum, parseInt(m[1], 10));
     }
     return 'ART-' + String(maxNum + 1).padStart(3, '0');
   }
 
-  /**
-   * Resuelve un artículo por nombre o lo inserta generando ART-XXX secuencial en la BD.
-   * Nunca permite modificar id_articulo desde la aplicación.
-   */
-  function getOrCreateArticulo(nombreRaw) {
+  async function getOrCreateArticulo(nombreRaw) {
     const cleanName = String(nombreRaw || '').replace(/^ART-\d+\s*\|\s*/i, '').trim();
-    if (!cleanName) {
-      throw new Error('El nombre del artículo no puede estar vacío.');
-    }
+    if (!cleanName) throw new Error('Nombre vacío');
 
-    const existing = queryAll(
-      'SELECT id_articulo, nombre FROM articulos WHERE LOWER(TRIM(nombre)) = LOWER(TRIM(?))',
-      [cleanName]
-    );
-    if (existing.length > 0) {
-      return existing[0];
-    }
+    const existing = cache.articulos.find(a => a.nombre.toLowerCase().trim() === cleanName.toLowerCase().trim());
+    if (existing) return existing;
 
-    const nextId = getNextArticuloIdOn(db);
-    db.run('INSERT INTO articulos (id_articulo, nombre) VALUES (?, ?)', [nextId, cleanName]);
-    saveToStorage();
+    const nextId = getNextArticuloId();
+    await supabaseClient.from('articulos').insert({ id_articulo: nextId, nombre: cleanName });
+    await reloadCache();
     return { id_articulo: nextId, nombre: cleanName };
   }
 
-  /**
-   * Actualiza únicamente el nombre de un artículo existente sin tocar su id_articulo
-   */
-  function updateArticuloNombre(idArticulo, nuevoNombreRaw) {
+  async function updateArticuloNombre(idArticulo, nuevoNombreRaw) {
     const cleanName = String(nuevoNombreRaw || '').replace(/^ART-\d+\s*\|\s*/i, '').trim();
     if (!cleanName) return false;
-    db.run('UPDATE articulos SET nombre = ? WHERE id_articulo = ?', [cleanName, idArticulo]);
-    saveToStorage();
+    await supabaseClient.from('articulos').update({ nombre: cleanName }).eq('id_articulo', idArticulo);
+    await reloadCache();
     return true;
-  }
-
-  /**
-   * Migra bases .sqlite antiguas (v1) al esquema actual (articulos, pedido_items, nombre_combo)
-   */
-  function ensureSchemaUpgraded(database) {
-    const artTable = queryAllOn(database, "SELECT name FROM sqlite_master WHERE type='table' AND name='articulos'");
-    if (artTable.length === 0) {
-      // Migrar desde esquema v1
-      database.run(`
-        CREATE TABLE articulos (
-          id_articulo TEXT PRIMARY KEY,
-          nombre TEXT NOT NULL UNIQUE
-        );
-        CREATE TRIGGER IF NOT EXISTS trg_articulos_no_update_id
-        BEFORE UPDATE OF id_articulo ON articulos
-        BEGIN
-          SELECT RAISE(ABORT, 'El identificador id_articulo (ART-XXX) es generado por la base de datos y no es modificable.');
-        END;
-      `);
-
-      const mapArt = new Map();
-      const registerLegacy = (rawStr) => {
-        const s = String(rawStr || '').trim();
-        if (!s) return 'ART-001';
-        const parts = s.split('|').map(x => x.trim());
-        let id = parts.length > 1 ? parts[0] : '';
-        let nombre = parts.length > 1 ? parts.slice(1).join(' | ') : parts[0];
-        if (mapArt.has(nombre.toLowerCase())) return mapArt.get(nombre.toLowerCase());
-        if (!/^ART-\d+$/i.test(id)) {
-          id = getNextArticuloIdOn(database);
-        }
-        database.run('INSERT OR IGNORE INTO articulos (id_articulo, nombre) VALUES (?, ?)', [id, nombre]);
-        mapArt.set(nombre.toLowerCase(), id);
-        return id;
-      };
-
-      const oldEsc = queryAllOn(database, 'SELECT * FROM escalas_reales');
-      const oldReg = queryAllOn(database, 'SELECT * FROM registro_costos');
-      database.run('DROP TABLE escalas_reales; DROP TABLE registro_costos;');
-      database.run(`
-        CREATE TABLE escalas_reales (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          fecha TEXT NOT NULL,
-          id_articulo TEXT NOT NULL REFERENCES articulos(id_articulo),
-          cantidad INTEGER NOT NULL CHECK(cantidad >= 1),
-          gramos_lote REAL NOT NULL CHECK(gramos_lote >= 0),
-          tiempo_impresion_lote_h REAL NOT NULL CHECK(tiempo_impresion_lote_h >= 0),
-          tiempo_preparacion_lote_h REAL NOT NULL CHECK(tiempo_preparacion_lote_h >= 0),
-          tiempo_postprocesado_unit_h REAL NOT NULL CHECK(tiempo_postprocesado_unit_h >= 0),
-          factor_multiplicador REAL NOT NULL DEFAULT 2.5
-        );
-        CREATE TABLE registro_costos (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          id_articulo TEXT NOT NULL REFERENCES articulos(id_articulo),
-          cantidad INTEGER NOT NULL CHECK(cantidad >= 1),
-          factor_multiplicador REAL NOT NULL DEFAULT 2.5
-        );
-      `);
-
-      for (const r of oldEsc) {
-        const idArt = registerLegacy(r.articulo);
-        database.run(
-          'INSERT INTO escalas_reales (fecha, id_articulo, cantidad, gramos_lote, tiempo_impresion_lote_h, tiempo_preparacion_lote_h, tiempo_postprocesado_unit_h, factor_multiplicador) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-          [r.fecha, idArt, r.cantidad, r.gramos_lote, r.tiempo_impresion_lote_h, r.tiempo_preparacion_lote_h, r.tiempo_postprocesado_unit_h, r.factor_multiplicador]
-        );
-      }
-      for (const r of oldReg) {
-        const idArt = registerLegacy(r.articulo);
-        database.run(
-          'INSERT INTO registro_costos (id_articulo, cantidad, factor_multiplicador) VALUES (?, ?, ?)',
-          [idArt, r.cantidad, r.factor_multiplicador]
-        );
-      }
-    }
-
-    // Verificar columna nombre_combo en combos_guardados
-    const cmbCols = queryAllOn(database, 'PRAGMA table_info(combos_guardados)').map(c => c.name);
-    if (!cmbCols.includes('nombre_combo')) {
-      database.run("ALTER TABLE combos_guardados ADD COLUMN nombre_combo TEXT NOT NULL DEFAULT 'Combo Guardado'");
-      database.run("UPDATE combos_guardados SET nombre_combo = opcion_elegida WHERE nombre_combo = 'Combo Guardado'");
-    }
-
-    // Verificar tabla pedido_items
-    const pedItemsTable = queryAllOn(database, "SELECT name FROM sqlite_master WHERE type='table' AND name='pedido_items'");
-    if (pedItemsTable.length === 0) {
-      const oldPeds = queryAllOn(database, 'SELECT * FROM pedidos');
-      database.run('DROP TABLE pedidos;');
-      database.run(`
-        CREATE TABLE pedidos (
-          id TEXT PRIMARY KEY,
-          fecha TEXT NOT NULL,
-          cliente TEXT NOT NULL,
-          estado TEXT NOT NULL
-        );
-        CREATE TABLE pedido_items (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          pedido_id TEXT NOT NULL REFERENCES pedidos(id) ON DELETE CASCADE,
-          tipo_item TEXT NOT NULL DEFAULT 'articulo',
-          ref_id TEXT NOT NULL,
-          descripcion TEXT NOT NULL,
-          cantidad INTEGER NOT NULL CHECK(cantidad >= 1),
-          precio_unitario REAL NOT NULL CHECK(precio_unitario >= 0)
-        );
-      `);
-      for (const p of oldPeds) {
-        database.run('INSERT INTO pedidos (id, fecha, cliente, estado) VALUES (?, ?, ?, ?)', [p.id, p.fecha, p.cliente, p.estado]);
-        database.run(
-          'INSERT INTO pedido_items (pedido_id, tipo_item, ref_id, descripcion, cantidad, precio_unitario) VALUES (?, ?, ?, ?, ?, ?)',
-          [p.id, 'articulo', p.id_articulo || 'ART-001', p.nombre_articulo || 'Artículo', p.cantidad || 1, p.precio_unitario || 0]
-        );
-      }
-    }
-
-    // Recrear vistas actualizadas
-    database.run(`
-      DROP VIEW IF EXISTS v_catalogo_articulos;
-      CREATE VIEW v_catalogo_articulos AS
-      SELECT a.id_articulo, a.nombre, (a.id_articulo || ' | ' || a.nombre) AS articulo
-      FROM articulos a
-      ORDER BY a.id_articulo ASC;
-
-      DROP VIEW IF EXISTS v_pedidos;
-      CREATE VIEW v_pedidos AS
-      SELECT
-          p.id,
-          p.fecha,
-          p.cliente,
-          p.estado,
-          COUNT(pi.id) AS cant_items,
-          COALESCE(SUM(pi.cantidad), 0) AS total_piezas,
-          ROUND(COALESCE(SUM(pi.cantidad * pi.precio_unitario), 0), 2) AS total_uyu
-      FROM pedidos p
-      LEFT JOIN pedido_items pi ON pi.pedido_id = p.id
-      GROUP BY p.id, p.fecha, p.cliente, p.estado;
-    `);
-  }
-
-  async function init() {
-    SQL = await initSqlJs({
-      locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/${file}`
-    });
-
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        db = new SQL.Database(base64ToUint8(saved));
-        db.exec('SELECT COUNT(*) FROM parametros_base');
-        ensureSchemaUpgraded(db);
-        saveToStorage();
-        return;
-      } catch (e) {
-        console.warn('Base guardada corrupta, restaurando semilla...', e);
-      }
-    }
-
-    db = new SQL.Database();
-    seedDatabase(db);
-    saveToStorage();
-  }
-
-  function queryAll(sql, params = []) {
-    return queryAllOn(db, sql, params);
-  }
-
-  function run(sql, params = []) {
-    db.run(sql, params);
-    saveToStorage();
-  }
-
-  function execRaw(sql) {
-    const results = db.exec(sql);
-    saveToStorage();
-    return results;
-  }
-
-  function exportBinary() {
-    return db.export();
-  }
-
-  function importBinary(arrayBuffer) {
-    const bytes = new Uint8Array(arrayBuffer);
-    const testDb = new SQL.Database(bytes);
-    testDb.exec('SELECT COUNT(*) FROM parametros_base');
-    ensureSchemaUpgraded(testDb);
-    db.close();
-    db = testDb;
-    saveToStorage();
-  }
-
-  function resetToExcelSeed() {
-    if (db) db.close();
-    db = new SQL.Database();
-    seedDatabase(db);
-    saveToStorage();
-  }
-
-  function getNextArticuloId() {
-    return getNextArticuloIdOn(db);
   }
 
   return {
     init,
     queryAll,
     run,
-    execRaw,
-    exportBinary,
-    importBinary,
-    resetToExcelSeed,
+    execRaw: async () => { await reloadCache(); return []; },
+    exportBinary: () => new Uint8Array(),
+    importBinary: () => {},
+    resetToExcelSeed: async () => {},
     getNextArticuloId,
     getOrCreateArticulo,
     updateArticuloNombre
