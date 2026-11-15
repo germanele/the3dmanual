@@ -159,6 +159,27 @@ const DB3D = (() => {
     }
   }
 
+  function execRaw(sql) {
+    const s = sql.trim().toLowerCase();
+    
+    function formatResult(arr) {
+      if (!arr || arr.length === 0) return [];
+      const columns = Object.keys(arr[0]);
+      const values = arr.map(row => columns.map(col => row[col]));
+      return [{ columns, values }];
+    }
+
+    if (s.includes('from articulos')) return formatResult(cache.articulos);
+    if (s.includes('from parametros_base')) return formatResult(cache.parametros_base);
+    if (s.includes('from escalas_reales')) return formatResult(cache.escalas_reales);
+    if (s.includes('from registro_costos')) return formatResult(cache.registro_costos);
+    if (s.includes('from combos_guardados')) return formatResult(cache.combos_guardados);
+    if (s.includes('from pedidos')) return formatResult(cache.pedidos);
+    if (s.includes('from pedido_items')) return formatResult(cache.pedido_items);
+    
+    return [];
+  }
+
   function getNextArticuloId() {
     let maxNum = 0;
     for (const a of cache.articulos) {
@@ -193,7 +214,7 @@ const DB3D = (() => {
     init,
     queryAll,
     run,
-    execRaw: async () => { await reloadCache(); return []; },
+    execRaw,
     exportBinary: () => new Uint8Array(),
     importBinary: () => {},
     resetToExcelSeed: async () => {},
