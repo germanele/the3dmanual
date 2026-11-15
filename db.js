@@ -1,12 +1,15 @@
 /**
  * ============================================================================
  * CAPA DE PERSISTENCIA SUPABASE (PostgreSQL Cloud + Caché Local Síncrona)
- * Gestión Impresión 3D - Costos, Artículos, Combos y Clientes (Uruguay)
  * ============================================================================
  */
 
-const SUPABASE_URL = 'https://tqxxtzugwojsxyefungm.supabase.co';      // <-- PEGA TU URL AQUÍ
-const SUPABASE_ANON_KEY = 'sb_publishable_N4mvfO4IoRFph4FK9s3eYg_mjL1OWQo';               // <-- PEGA TU ANON KEY AQUÍ
+// 1. CONFIGURACIÓN DE CREDENCIALES
+const SUPABASE_URL_RAW = 'https://tqxxtzugwojsxyefungm.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_N4mvfO4IoRFph4FK9s3eYg_mjL1OWQo';
+
+// Limpieza estricta de la URL para evitar duplicación de rutas en la API
+const SUPABASE_URL = SUPABASE_URL_RAW.split('/rest/v1')[0].replace(/\/+$/, '');
 
 const DB3D = (() => {
   let supabaseClient = null;
@@ -21,24 +24,12 @@ const DB3D = (() => {
     pedido_items: []
   };
 
- // async function init() {
- //   if (typeof supabase === 'undefined') {
- //     throw new Error('No se pudo cargar la librería de Supabase.');
- //   }
- //   supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
- //   await reloadCache();
- // } 
-
-async function init() {
+  async function init() {
     if (typeof supabase === 'undefined') {
       throw new Error('No se pudo cargar la librería de Supabase.');
     }
     
-    // Limpiamos la URL por si acaso tiene barras o sufijos de más
-    const cleanUrl = SUPABASE_URL.replace(/\/+$/, '').replace(/\/rest\/v1\/?$/i, '');
-    
-    // Inicializamos con opciones para asegurar que apunte limpiamente
-    supabaseClient = supabase.createClient(cleanUrl, SUPABASE_ANON_KEY, {
+    supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       db: { schema: 'public' },
       auth: { persistSession: false }
     });
@@ -46,25 +37,33 @@ async function init() {
     await reloadCache();
   }
 
-
   async function reloadCache() {
-    const [p, a, er, rc, cg, ped, pi] = await Promise.all([
-      supabaseClient.from('parametros_base').select('*'),
-      supabaseClient.from('articulos').select('*').order('id_articulo', { ascending: true }),
-      supabaseClient.from('escalas_reales').select('*').order('id', { ascending: true }),
-      supabaseClient.from('registro_costos').select('*').order('id', { ascending: true }),
-      supabaseClient.from('combos_guardados').select('*').order('id', { ascending: false }),
-      supabaseClient.from('pedidos').select('*').order('fecha', { ascending: false }),
-      supabaseClient.from('pedido_items').select('*').order('id', { ascending: true })
-    ]);
+    try {
+      const [pBase, arts, escalas, costos, combos, peds, pItems] = await Promise.all([
+        supabaseClient.from('parametros_base').select('*'),
+        supabaseClient.from('articulos').select('*'),
+        supabaseClient.from('escalas_reales').select('*'),
+        supabaseClient.from('registro_costos').select('*'),
+        supabaseClient.from('combos_guardados').select('*'),
+        supabaseClient.from('pedidos').select('*'),
+        supabaseClient.from('pedido_items').select('*')
+      ]);
 
-    cache.parametros_base = p.data || [];
-    cache.articulos = a.data || [];
-    cache.escalas_reales = er.data || [];
-    cache.registro_costos = rc.data || [];
-    cache.combos_guardados = cg.data || [];
-    cache.pedidos = ped.data || [];
-    cache.pedido_items = pi.data || [];
+      if (pBase.error) console.error('Error cargando parametros_base:', pBase.error);
+      if (arts.error) console.error('Error cargando articulos:', arts.error);
+
+      cache.parametros_base = pBase.data || [];
+      cache.articulos = arts.data || [];
+      cache.escalas_reales = escalas.data || [];
+      cache.registro_costos = costos.data || [];
+      cache.combos_guardados = combos.data || [];
+      cache.pedidos = peds.data || [];
+      cache.pedido_items = pItems.data || [];
+
+      console.log('DB3D: Caché sincronizada con Supabase correctamente.');
+    } catch (err) {
+      console.error('DB3D: Error crítico sincronizando caché con Supabase:', err);
+    }
   }
 
   function queryAll(sql, params = []) {
@@ -72,7 +71,6 @@ async function init() {
 
     if (cleanSql.includes('from parametros_base')) return [...cache.parametros_base];
     
-    // Corrección para asegurar que devuelva los artículos ordenados correctamente
     if (cleanSql.includes('from articulos')) {
       return [...cache.articulos].sort((x, y) => String(x.id_articulo).localeCompare(String(y.id_articulo)));
     }
@@ -110,141 +108,102 @@ async function init() {
   }
 
   async function run(sql, params = []) {
-    const s = sql.trim().toLowerCase();
+    const cleanSql = sql.trim().toLowerCase();
+
     try {
-      if (s.startsWith('update articulos set nombre')) {
-        await supabaseClient.from('articulos').update({ nombre: params[0] }).eq('id_articulo', params[1]);
-      } else if (s.startsWith('update registro_costos set cantidad')) {
-        await supabaseClient.from('registro_costos').update({ cantidad: params[0] }).eq('id', params[1]);
-      } else if (s.startsWith('update registro_costos set factor_multiplicador')) {
-        await supabaseClient.from('registro_costos').update({ factor_multiplicador: params[0] }).eq('id', params[1]);
-      } else if (s.startsWith('delete from registro_costos')) {
-        await supabaseClient.from('registro_costos').delete().eq('id', params[0]);
-      } else if (s.startsWith('insert into registro_costos')) {
-        await supabaseClient.from('registro_costos').insert({ id_articulo: params[0], cantidad: params[1], factor_multiplicador: params[2] });
-      } else if (s.startsWith('update escalas_reales set')) {
-        if (s.includes('gramos_lote')) {
-          await supabaseClient.from('escalas_reales').update({ gramos_lote: params[0] }).eq('id', params[1]);
-        } else if (s.includes('tiempo_impresion_lote_h')) {
-          await supabaseClient.from('escalas_reales').update({ tiempo_impresion_lote_h: params[0] }).eq('id', params[1]);
-        } else if (s.includes('tiempo_preparacion_lote_h')) {
-          await supabaseClient.from('escalas_reales').update({ tiempo_preparacion_lote_h: params[0] }).eq('id', params[1]);
-        } else if (s.includes('tiempo_postprocesado_unit_h')) {
-          await supabaseClient.from('escalas_reales').update({ tiempo_postprocesado_unit_h: params[0] }).eq('id', params[1]);
-        } else {
-          await supabaseClient.from('escalas_reales').update({
-            fecha: params[0], gramos_lote: params[1], tiempo_impresion_lote_h: params[2],
-            tiempo_preparacion_lote_h: params[3], factor_multiplicador: params[4]
-          }).eq('id', params[5]);
-        }
-      } else if (s.startsWith('insert into escalas_reales')) {
-        await supabaseClient.from('escalas_reales').insert({
-          fecha: params[0], id_articulo: params[1], cantidad: params[2],
-          gramos_lote: params[3], tiempo_impresion_lote_h: params[4],
-          tiempo_preparacion_lote_h: params[5], tiempo_postprocesado_unit_h: params[6],
-          factor_multiplicador: params[7]
-        });
-      } else if (s.startsWith('delete from escalas_reales')) {
-        await supabaseClient.from('escalas_reales').delete().eq('id', params[0]);
-      } else if (s.startsWith('update combos_guardados set nombre_combo')) {
-        await supabaseClient.from('combos_guardados').update({ nombre_combo: params[0] }).eq('id', params[1]);
-      } else if (s.startsWith('delete from combos_guardados')) {
-        await supabaseClient.from('combos_guardados').delete().eq('id', params[0]);
-      } else if (s.startsWith('insert into combos_guardados')) {
-        await supabaseClient.from('combos_guardados').insert({
-          fecha: params[0], nombre_combo: params[1], presupuesto: params[2],
-          opcion_elegida: params[3], composicion: params[4], precio_venta: params[5],
-          costo_produccion: params[6], saldo_presupuesto: params[7], estado: params[8]
-        });
-      } else if (s.startsWith('insert into pedidos')) {
-        await supabaseClient.from('pedidos').insert({ id: params[0], fecha: params[1], cliente: params[2], estado: params[3] });
-      } else if (s.startsWith('insert into pedido_items')) {
-        await supabaseClient.from('pedido_items').insert({
-          pedido_id: params[0], tipo_item: params[1], ref_id: params[2],
-          descripcion: params[3], cantidad: params[4], precio_unitario: params[5]
-        });
-      } else if (s.startsWith('update pedido_items set cantidad')) {
-        await supabaseClient.from('pedido_items').update({ cantidad: params[0] }).eq('id', params[1]);
-      } else if (s.startsWith('update pedido_items set precio_unitario')) {
-        await supabaseClient.from('pedido_items').update({ precio_unitario: params[0] }).eq('id', params[1]);
-      } else if (s.startsWith('delete from pedido_items where id')) {
-        await supabaseClient.from('pedido_items').delete().eq('id', params[0]);
-      } else if (s.startsWith('update pedidos set estado')) {
-        await supabaseClient.from('pedidos').update({ estado: params[0] }).eq('id', params[1]);
-      } else if (s.startsWith('delete from pedido_items where pedido_id')) {
-        await supabaseClient.from('pedido_items').delete().eq('pedido_id', params[0]);
-      } else if (s.startsWith('delete from pedidos')) {
-        await supabaseClient.from('pedidos').delete().eq('id', params[0]);
-      } else if (s.startsWith('update parametros_base set valor')) {
-        await supabaseClient.from('parametros_base').update({ valor: params[0] }).eq('clave', params[1]);
+      // Inserción en parámetros base
+      if (cleanSql.startsWith('insert into parametros_base')) {
+        const [clave, parametro, valor, unidad, base, notas] = params;
+        const { error } = await supabaseClient
+          .from('parametros_base')
+          .upsert({ clave, parametro, valor, unidad, base, notas }, { onConflict: 'clave' });
+        if (error) throw error;
       }
+      // Inserción en artículos
+      else if (cleanSql.startsWith('insert into articulos')) {
+        const [id_articulo, nombre] = params;
+        const { error } = await supabaseClient
+          .from('articulos')
+          .upsert({ id_articulo, nombre }, { onConflict: 'id_articulo' });
+        if (error) throw error;
+      }
+      // Inserción en registro de costos
+      else if (cleanSql.startsWith('insert into registro_costos')) {
+        const [id_articulo, peso_g, tiempo_h, costo_material, costo_maquina, costo_mano_obra, costo_total, precio_sugerido] = params;
+        const { error } = await supabaseClient
+          .from('registro_costos')
+          .insert({ id_articulo, peso_g, tiempo_h, costo_material, costo_maquina, costo_mano_obra, costo_total, precio_sugerido });
+        if (error) throw error;
+      }
+      // Inserción en escalas reales
+      else if (cleanSql.startsWith('insert into escalas_reales')) {
+        const [id_articulo, cantidad, precio_sugerido, costo_total] = params;
+        const { error } = await supabaseClient
+          .from('escalas_reales')
+          .insert({ id_articulo, cantidad, precio_sugerido, costo_total });
+        if (error) throw error;
+      }
+      // Inserción en combos
+      else if (cleanSql.startsWith('insert into combos_guardados')) {
+        const [nombre_combo, items_json, costo_total, precio_sugerido] = params;
+        const { error } = await supabaseClient
+          .from('combos_guardados')
+          .insert({ nombre_combo, items_json, costo_total, precio_sugerido });
+        if (error) throw error;
+      }
+      // Inserción en pedidos
+      else if (cleanSql.startsWith('insert into pedidos')) {
+        const [cliente, total] = params;
+        const { data, error } = await supabaseClient
+          .from('pedidos')
+          .insert({ cliente, total })
+          .select('id')
+          .single();
+        if (error) throw error;
+        await reloadCache();
+        return data ? data.id : null;
+      }
+      // Inserción en ítem de pedido
+      else if (cleanSql.startsWith('insert into pedido_items')) {
+        const [id_pedido, descripcion, cantidad, precio_unitario] = params;
+        const { error } = await supabaseClient
+          .from('pedido_items')
+          .insert({ id_pedido, descripcion, cantidad, precio_unitario });
+        if (error) throw error;
+      }
+      // Eliminaciones
+      else if (cleanSql.startsWith('delete from articulos')) {
+        const { error } = await supabaseClient.from('articulos').delete().eq('id_articulo', params[0]);
+        if (error) throw error;
+      }
+      else if (cleanSql.startsWith('delete from registro_costos')) {
+        const { error } = await supabaseClient.from('registro_costos').delete().eq('id', params[0]);
+        if (error) throw error;
+      }
+      else if (cleanSql.startsWith('delete from combos_guardados')) {
+        const { error } = await supabaseClient.from('combos_guardados').delete().eq('id', params[0]);
+        if (error) throw error;
+      }
+      else if (cleanSql.startsWith('delete from pedidos')) {
+        const { error } = await supabaseClient.from('pedidos').delete().eq('id', params[0]);
+        if (error) throw error;
+      }
+
       await reloadCache();
     } catch (err) {
-      console.error('Error sincronizando con Supabase:', err);
+      console.error('DB3D Error en ejecución SQL (run):', err);
+      throw err;
     }
-  }
-
-  function execRaw(sql) {
-    const s = sql.trim().toLowerCase();
-    
-    function formatResult(arr) {
-      if (!arr || arr.length === 0) return [];
-      const columns = Object.keys(arr[0]);
-      const values = arr.map(row => columns.map(col => row[col]));
-      return [{ columns, values }];
-    }
-
-    if (s.includes('from articulos')) return formatResult(cache.articulos);
-    if (s.includes('from parametros_base')) return formatResult(cache.parametros_base);
-    if (s.includes('from escalas_reales')) return formatResult(cache.escalas_reales);
-    if (s.includes('from registro_costos')) return formatResult(cache.registro_costos);
-    if (s.includes('from combos_guardados')) return formatResult(cache.combos_guardados);
-    if (s.includes('from pedidos')) return formatResult(cache.pedidos);
-    if (s.includes('from pedido_items')) return formatResult(cache.pedido_items);
-    
-    return [];
-  }
-
-  function getNextArticuloId() {
-    let maxNum = 0;
-    for (const a of cache.articulos) {
-      const m = String(a.id_articulo || '').match(/^ART-(\d+)$/i);
-      if (m) maxNum = Math.max(maxNum, parseInt(m[1], 10));
-    }
-    return 'ART-' + String(maxNum + 1).padStart(3, '0');
-  }
-
-  async function getOrCreateArticulo(nombreRaw) {
-    const cleanName = String(nombreRaw || '').replace(/^ART-\d+\s*\|\s*/i, '').trim();
-    if (!cleanName) throw new Error('Nombre vacío');
-
-    const existing = cache.articulos.find(a => a.nombre.toLowerCase().trim() === cleanName.toLowerCase().trim());
-    if (existing) return existing;
-
-    const nextId = getNextArticuloId();
-    await supabaseClient.from('articulos').insert({ id_articulo: nextId, nombre: cleanName });
-    await reloadCache();
-    return { id_articulo: nextId, nombre: cleanName };
-  }
-
-  async function updateArticuloNombre(idArticulo, nuevoNombreRaw) {
-    const cleanName = String(nuevoNombreRaw || '').replace(/^ART-\d+\s*\|\s*/i, '').trim();
-    if (!cleanName) return false;
-    await supabaseClient.from('articulos').update({ nombre: cleanName }).eq('id_articulo', idArticulo);
-    await reloadCache();
-    return true;
   }
 
   return {
     init,
+    reloadCache,
     queryAll,
     run,
-    execRaw,
-    exportBinary: () => new Uint8Array(),
-    importBinary: () => {},
-    resetToExcelSeed: async () => {},
-    getNextArticuloId,
-    getOrCreateArticulo,
-    updateArticuloNombre
+    execRaw: async (sql) => {
+      console.warn('execRaw simulado:', sql);
+      return [];
+    }
   };
 })();
