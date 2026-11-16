@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * CONTROLADOR PRINCIPAL DE INTERFAZ Y OPERACIONES CRUD EN TIEMPO REAL
+ * CONTROLADOR PRINCIPAL DE INTERFAZ Y OPERACIONES CRUD EN TIEMPO REAL (SUPABASE)
  * ============================================================================
  */
 
@@ -68,71 +68,70 @@ function handleHHMMBlur(inputEl) {
 /**
  * Previsualiza el ID automático ART-XXX según el nombre ingresado
  */
-function previewNextArticuloId(nombreVal) {
+async function previewNextArticuloId(nombreVal) {
   const badge = document.getElementById('reg-next-id');
   if (!badge) return;
-  const clean = String(nombreVal || '').replace(/^ART-\d+\s*\|\s*/i, '').trim();
-  if (clean) {
-    const existing = DB3D.queryAll(
-      'SELECT id_articulo FROM articulos WHERE LOWER(TRIM(nombre)) = LOWER(TRIM(?))',
-      [clean]
-    );
-    if (existing.length > 0) {
-      badge.textContent = `🔒 ${existing[0].id_articulo} (Existente)`;
-      return;
+  try {
+    const clean = String(nombreVal || '').replace(/^ART-\d+\s*\|\s*/i, '').trim();
+    if (clean) {
+      const existing = await DB3D.findArticuloByName(clean);
+      if (existing) {
+        badge.textContent = `🔒 ${existing.id_articulo} (Existente)`;
+        return;
+      }
     }
+    const nextId = await DB3D.getNextArticuloId();
+    badge.textContent = `🔒 ${nextId}`;
+  } catch (err) {
+    console.warn(err);
   }
-  badge.textContent = `🔒 ${DB3D.getNextArticuloId()}`;
 }
 
 /**
- * Recalcula y renderiza TODAS las vistas de la aplicación desde SQLite
+ * Recalcula y renderiza TODAS las vistas de la aplicación desde Supabase
  */
-function refreshAll() {
-  const paramRows = DB3D.queryAll('SELECT * FROM parametros_base');
-  const articulos = DB3D.queryAll('SELECT id_articulo, nombre FROM articulos ORDER BY id_articulo ASC');
-  const escalasReales = DB3D.queryAll(`
-    SELECT er.*, a.nombre AS nombre_articulo
-    FROM escalas_reales er
-    JOIN articulos a ON a.id_articulo = er.id_articulo
-    ORDER BY er.id ASC
-  `);
-  const registroRaw = DB3D.queryAll(`
-    SELECT rc.*, a.nombre AS nombre_articulo
-    FROM registro_costos rc
-    JOIN articulos a ON a.id_articulo = rc.id_articulo
-    ORDER BY rc.id ASC
-  `);
-  const combosGuardados = DB3D.queryAll('SELECT * FROM combos_guardados ORDER BY id DESC');
-  const pedidos = DB3D.queryAll('SELECT * FROM pedidos ORDER BY fecha DESC, id DESC');
-  const pedidoItems = DB3D.queryAll('SELECT * FROM pedido_items ORDER BY id ASC');
+async function refreshAll() {
+  try {
+    const {
+      paramRows,
+      articulos,
+      escalasReales,
+      registroRaw,
+      combosGuardados,
+      pedidos,
+      pedidoItems
+    } = await DB3D.getAllData();
 
-  const params = Engine3D.mapParametros(paramRows);
-  const registroCalc = registroRaw.map(r =>
-    Engine3D.calcularFilaRegistroCostos(r, escalasReales, registroRaw, params)
-  );
+    const params = Engine3D.mapParametros(paramRows);
+    const registroCalc = registroRaw.map(r =>
+      Engine3D.calcularFilaRegistroCostos(r, escalasReales, registroRaw, params)
+    );
 
-  // Actualizar datalist de nombres de artículos
-  const datalist = document.getElementById('catalogo-nombres-list');
-  datalist.innerHTML = articulos.map(a => `<option value="${escHtml(a.nombre)}">`).join('');
+    // Actualizar datalist de nombres de artículos
+    const datalist = document.getElementById('catalogo-nombres-list');
+    datalist.innerHTML = articulos.map(a => `<option value="${escHtml(a.nombre)}">`).join('');
 
-  // Actualizar datalist de clientes históricos
-  const clientesUnicos = [...new Set(pedidos.map(p => p.cliente).filter(Boolean))];
-  const clientesList = document.getElementById('clientes-list');
-  if (clientesList) {
-    clientesList.innerHTML = clientesUnicos.map(c => `<option value="${escHtml(c)}">`).join('');
+    // Actualizar datalist de clientes históricos
+    const clientesUnicos = [...new Set(pedidos.map(p => p.cliente).filter(Boolean))];
+    const clientesList = document.getElementById('clientes-list');
+    if (clientesList) {
+      clientesList.innerHTML = clientesUnicos.map(c => `<option value="${escHtml(c)}">`).join('');
+    }
+
+    // Actualizar vista previa de siguiente ID ART-XXX
+    const regArtInput = document.getElementById('reg-art');
+    await previewNextArticuloId(regArtInput ? regArtInput.value : '');
+
+    renderRegistroCostos(registroCalc);
+    renderCotizador(articulos, escalasReales, params);
+    renderCombos(registroCalc, escalasReales, params, combosGuardados);
+    renderPedidos(pedidos, pedidoItems, registroCalc, combosGuardados);
+    renderEscalasReales(escalasReales, params);
+    renderParametros(paramRows);
+  } catch (err) {
+    console.error(err);
+    showToast('❌ Error sincronizando con Supabase: ' + err.message);
   }
-
-  // Actualizar vista previa de siguiente ID ART-XXX
-  const regArtInput = document.getElementById('reg-art');
-  previewNextArticuloId(regArtInput ? regArtInput.value : '');
-
-  renderRegistroCostos(registroCalc);
-  renderCotizador(articulos, escalasReales, params);
-  renderCombos(registroCalc, escalasReales, params, combosGuardados);
-  renderPedidos(pedidos, pedidoItems, registroCalc, combosGuardados);
-  renderEscalasReales(escalasReales, params);
-  renderParametros(paramRows);
 }
 
 /* ============================================================================
@@ -189,43 +188,55 @@ function renderRegistroCostos(registroCalc) {
   }).join('');
 }
 
-function updateArticuloNombre(idArticulo, nuevoNombre) {
+async function updateArticuloNombre(idArticulo, nuevoNombre) {
   const clean = String(nuevoNombre || '').trim();
   if (!clean) {
     showToast('⚠️ El nombre del artículo no puede quedar vacío');
-    refreshAll();
+    await refreshAll();
     return;
   }
   try {
-    DB3D.updateArticuloNombre(idArticulo, clean);
-    refreshAll();
+    await DB3D.updateArticuloNombre(idArticulo, clean);
+    await refreshAll();
     showToast(`Nombre de ${idArticulo} actualizado`);
   } catch (err) {
     showToast('⚠️ Ya existe otro artículo con ese nombre');
-    refreshAll();
+    await refreshAll();
   }
 }
 
-function updateRegistroCantidad(id, nuevaCant) {
-  const cant = Math.max(1, Math.floor(Number(nuevaCant) || 1));
-  DB3D.run('UPDATE registro_costos SET cantidad = ? WHERE id = ?', [cant, id]);
-  refreshAll();
-  showToast('Cantidad actualizada en SQLite');
+async function updateRegistroCantidad(id, nuevaCant) {
+  try {
+    const cant = Math.max(1, Math.floor(Number(nuevaCant) || 1));
+    await DB3D.updateRegistroCosto(id, { cantidad: cant });
+    await refreshAll();
+    showToast('Cantidad actualizada en Supabase');
+  } catch (err) {
+    showToast('❌ Error: ' + err.message);
+  }
 }
 
-function updateRegistroFactor(id, nuevoFactor) {
-  DB3D.run('UPDATE registro_costos SET factor_multiplicador = ? WHERE id = ?', [Number(nuevoFactor), id]);
-  refreshAll();
-  showToast('Factor multiplicador actualizado');
+async function updateRegistroFactor(id, nuevoFactor) {
+  try {
+    await DB3D.updateRegistroCosto(id, { factor_multiplicador: Number(nuevoFactor) });
+    await refreshAll();
+    showToast('Factor multiplicador actualizado');
+  } catch (err) {
+    showToast('❌ Error: ' + err.message);
+  }
 }
 
-function deleteRegistro(id) {
-  DB3D.run('DELETE FROM registro_costos WHERE id = ?', [id]);
-  refreshAll();
-  showToast('Fila eliminada de Artículos');
+async function deleteRegistro(id) {
+  try {
+    await DB3D.deleteRegistroCosto(id);
+    await refreshAll();
+    showToast('Fila eliminada de Artículos');
+  } catch (err) {
+    showToast('❌ Error: ' + err.message);
+  }
 }
 
-function handleAddRegistro(e) {
+async function handleAddRegistro(e) {
   e.preventDefault();
   const nombreRaw = document.getElementById('reg-art').value.trim();
   const cantidad = Math.max(1, Math.floor(Number(document.getElementById('reg-cant').value) || 1));
@@ -254,39 +265,33 @@ function handleAddRegistro(e) {
     return;
   }
 
-  // Resolver o crear artículo con ID ART-XXX secuencial en la BD
-  const artObj = DB3D.getOrCreateArticulo(nombreRaw);
+  try {
+    const artObj = await DB3D.getOrCreateArticulo(nombreRaw);
 
-  // Si se ingresaron gramos e impresión, guardar también en escalas_reales
-  if (gramos > 0 && Number.isFinite(impH) && impH > 0) {
-    const fecha = new Date().toISOString().slice(0, 10);
-    DB3D.run(`
-      INSERT INTO escalas_reales (
-        fecha, id_articulo, cantidad, gramos_lote, tiempo_impresion_lote_h,
-        tiempo_preparacion_lote_h, tiempo_postprocesado_unit_h, factor_multiplicador
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      fecha,
-      artObj.id_articulo,
-      cantidad,
-      gramos,
-      impH,
-      Number.isFinite(prepH) ? prepH : 0,
-      Number.isFinite(postH) ? postH : 0,
-      factor
-    ]);
+    if (gramos > 0 && Number.isFinite(impH) && impH > 0) {
+      const fecha = new Date().toISOString().slice(0, 10);
+      await DB3D.insertEscalaReal({
+        fecha,
+        id_articulo: artObj.id_articulo,
+        cantidad,
+        gramos_lote: gramos,
+        tiempo_impresion_lote_h: impH,
+        tiempo_preparacion_lote_h: Number.isFinite(prepH) ? prepH : 0,
+        tiempo_postprocesado_unit_h: Number.isFinite(postH) ? postH : 0,
+        factor_multiplicador: factor
+      });
+    }
+
+    await DB3D.insertRegistroCosto(artObj.id_articulo, cantidad, factor);
+
+    e.target.reset();
+    document.getElementById('reg-cant').value = 1;
+    document.getElementById('reg-factor').value = '2.5';
+    await refreshAll();
+    showToast(`✅ Artículo ${artObj.id_articulo} (${artObj.nombre}) guardado en Supabase`);
+  } catch (err) {
+    showToast('❌ Error al guardar: ' + err.message);
   }
-
-  DB3D.run(
-    'INSERT INTO registro_costos (id_articulo, cantidad, factor_multiplicador) VALUES (?, ?, ?)',
-    [artObj.id_articulo, cantidad, factor]
-  );
-
-  e.target.reset();
-  document.getElementById('reg-cant').value = 1;
-  document.getElementById('reg-factor').value = '2.5';
-  refreshAll();
-  showToast(`✅ Artículo ${artObj.id_articulo} (${artObj.nombre}) guardado en SQLite`);
 }
 
 /* ============================================================================
@@ -362,7 +367,7 @@ function renderCotizador(articulos, escalasReales, params) {
   renderEscalaChart(res.tablaEscalas, `${idArticulo} | ${nombreArticulo}`);
 }
 
-function guardarMedicionDesdeCotizador() {
+async function guardarMedicionDesdeCotizador() {
   const idArticulo = document.getElementById('cot-articulo').value;
   const cantidad = Math.max(1, Math.floor(Number(document.getElementById('cot-cantidad').value) || 1));
   const factor = Number(document.getElementById('cot-factor').value) || 2.5;
@@ -376,32 +381,27 @@ function guardarMedicionDesdeCotizador() {
     return;
   }
 
-  const fecha = new Date().toISOString().slice(0, 10);
-  const existing = DB3D.queryAll(
-    'SELECT id FROM escalas_reales WHERE id_articulo = ? AND cantidad = ?',
-    [idArticulo, cantidad]
-  );
+  try {
+    const fecha = new Date().toISOString().slice(0, 10);
+    await DB3D.upsertEscalaReal({
+      fecha,
+      id_articulo: idArticulo,
+      cantidad,
+      gramos_lote: gramos,
+      tiempo_impresion_lote_h: impH,
+      tiempo_preparacion_lote_h: prepH,
+      tiempo_postprocesado_unit_h: 0,
+      factor_multiplicador: factor
+    });
 
-  if (existing.length > 0) {
-    DB3D.run(`
-      UPDATE escalas_reales
-      SET fecha = ?, gramos_lote = ?, tiempo_impresion_lote_h = ?, tiempo_preparacion_lote_h = ?, factor_multiplicador = ?
-      WHERE id = ?
-    `, [fecha, gramos, impH, prepH, factor, existing[0].id]);
-  } else {
-    DB3D.run(`
-      INSERT INTO escalas_reales (
-        fecha, id_articulo, cantidad, gramos_lote, tiempo_impresion_lote_h,
-        tiempo_preparacion_lote_h, tiempo_postprocesado_unit_h, factor_multiplicador
-      ) VALUES (?, ?, ?, ?, ?, ?, 0, ?)
-    `, [fecha, idArticulo, cantidad, gramos, impH, prepH, factor]);
+    document.getElementById('cot-manual-gramos').value = '';
+    document.getElementById('cot-manual-imp').value = '';
+    document.getElementById('cot-manual-prep').value = '';
+    await refreshAll();
+    showToast(`✅ Medición real guardada para ${idArticulo} (${cantidad} u.)`);
+  } catch (err) {
+    showToast('❌ Error: ' + err.message);
   }
-
-  document.getElementById('cot-manual-gramos').value = '';
-  document.getElementById('cot-manual-imp').value = '';
-  document.getElementById('cot-manual-prep').value = '';
-  refreshAll();
-  showToast(`✅ Medición real guardada para ${idArticulo} (${cantidad} u.)`);
 }
 
 function renderEscalaChart(tablaEscalas, articuloLabel) {
@@ -524,7 +524,7 @@ function renderCombos(registroCalc, escalasReales, params, combosGuardados) {
     </tr>
   `).join('');
 
-  // Tabla de Historial de Combos Guardados en SQLite
+  // Tabla de Historial de Combos Guardados
   const tbodyHist = document.getElementById('tbody-combo-historial');
   tbodyHist.innerHTML = combosGuardados.map(c => `
     <tr>
@@ -547,37 +547,37 @@ function renderCombos(registroCalc, escalasReales, params, combosGuardados) {
   `).join('');
 }
 
-function updateComboConfig() {
+async function updateComboConfig() {
   comboState.presupuesto = Math.max(0, Number(document.getElementById('cmb-presupuesto').value) || 0);
   comboState.factorGlobal = document.getElementById('cmb-factor').value;
-  refreshAll();
+  await refreshAll();
 }
 
-function addComboLinea() {
+async function addComboLinea() {
   if (comboState.lineas.length >= 10) {
     showToast('Máximo 10 artículos por combo');
     return;
   }
   comboState.lineas.push({ id_articulo: '', manualCant: 1 });
-  refreshAll();
+  await refreshAll();
 }
 
-function removeComboLinea(idx) {
+async function removeComboLinea(idx) {
   comboState.lineas.splice(idx, 1);
-  refreshAll();
+  await refreshAll();
 }
 
-function updateComboLineaArt(idx, idArt) {
+async function updateComboLineaArt(idx, idArt) {
   comboState.lineas[idx].id_articulo = idArt;
-  refreshAll();
+  await refreshAll();
 }
 
-function updateComboLineaManual(idx, cant) {
+async function updateComboLineaManual(idx, cant) {
   comboState.lineas[idx].manualCant = Math.max(0, Math.floor(Number(cant) || 0));
-  refreshAll();
+  await refreshAll();
 }
 
-function guardarComboEnHistorial(opcionIdx) {
+async function guardarComboEnHistorial(opcionIdx) {
   const op = (window.__lastComboOpciones || [])[opcionIdx];
   if (!op || op.totalPiezas <= 0) {
     showToast('⚠️ Seleccioná artículos válidos antes de guardar');
@@ -593,43 +593,51 @@ function guardarComboEnHistorial(opcionIdx) {
     nombreCombo = ingresado.trim() || sugerido;
   }
 
-  const fecha = new Date().toISOString().slice(0, 10);
-  DB3D.run(`
-    INSERT INTO combos_guardados (
-      fecha, nombre_combo, presupuesto, opcion_elegida, composicion,
-      precio_venta, costo_produccion, saldo_presupuesto, estado
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '✅ Guardado')
-  `, [
-    fecha,
-    nombreCombo,
-    comboState.presupuesto,
-    op.nombre,
-    op.composicion,
-    op.precioVenta,
-    op.costoProduccion,
-    op.saldoPresupuesto
-  ]);
+  try {
+    const fecha = new Date().toISOString().slice(0, 10);
+    await DB3D.insertComboGuardado({
+      fecha,
+      nombre_combo: nombreCombo,
+      presupuesto: comboState.presupuesto,
+      opcion_elegida: op.nombre,
+      composicion: op.composicion,
+      precio_venta: op.precioVenta,
+      costo_produccion: op.costoProduccion,
+      saldo_presupuesto: op.saldoPresupuesto,
+      estado: '✅ Guardado'
+    });
 
-  if (inputNombre) inputNombre.value = '';
-  refreshAll();
-  showToast(`✅ Combo "${nombreCombo}" guardado en SQLite`);
+    if (inputNombre) inputNombre.value = '';
+    await refreshAll();
+    showToast(`✅ Combo "${nombreCombo}" guardado en Supabase`);
+  } catch (err) {
+    showToast('❌ Error: ' + err.message);
+  }
 }
 
-function updateComboNombre(id, nuevoNombre) {
+async function updateComboNombre(id, nuevoNombre) {
   const clean = String(nuevoNombre || '').trim();
   if (!clean) {
-    refreshAll();
+    await refreshAll();
     return;
   }
-  DB3D.run('UPDATE combos_guardados SET nombre_combo = ? WHERE id = ?', [clean, id]);
-  refreshAll();
-  showToast('Nombre del combo actualizado');
+  try {
+    await DB3D.updateComboNombre(id, clean);
+    await refreshAll();
+    showToast('Nombre del combo actualizado');
+  } catch (err) {
+    showToast('❌ Error: ' + err.message);
+  }
 }
 
-function deleteComboGuardado(id) {
-  DB3D.run('DELETE FROM combos_guardados WHERE id = ?', [id]);
-  refreshAll();
-  showToast('Combo eliminado del historial');
+async function deleteComboGuardado(id) {
+  try {
+    await DB3D.deleteComboGuardado(id);
+    await refreshAll();
+    showToast('Combo eliminado del historial');
+  } catch (err) {
+    showToast('❌ Error: ' + err.message);
+  }
 }
 
 /* ============================================================================
@@ -639,7 +647,6 @@ function renderPedidos(pedidos, pedidoItems, registroCalc, combosGuardados) {
   window.__lastRegistroCalc = registroCalc;
   window.__lastCombosGuardados = combosGuardados;
 
-  // Agrupar ítems por pedido_id
   const itemsPorPedido = new Map();
   for (const it of pedidoItems) {
     if (!itemsPorPedido.has(it.pedido_id)) itemsPorPedido.set(it.pedido_id, []);
@@ -665,10 +672,8 @@ function renderPedidos(pedidos, pedidoItems, registroCalc, combosGuardados) {
   document.getElementById('kpi-ped-entregado').textContent = fmtUYU(totalFacturado);
   document.getElementById('kpi-ped-curso').textContent = fmtUYU(totalEnCurso);
 
-  // Renderizar constructor de líneas del nuevo pedido
   renderPedidoDraft(registroCalc, combosGuardados);
 
-  // Renderizar tabla de pedidos activos
   const estados = ['Pendiente', 'En Producción', 'Listo para Entrega', 'Entregado', 'Cancelado'];
   const tbody = document.getElementById('tbody-pedidos');
   tbody.innerHTML = pedidos.map(p => {
@@ -834,7 +839,7 @@ function updatePedidoDraftPrecio(idx, val) {
   renderPedidoDraft(window.__lastRegistroCalc || [], window.__lastCombosGuardados || []);
 }
 
-function handleAddPedido(e) {
+async function handleAddPedido(e) {
   e.preventDefault();
   const fecha = document.getElementById('ped-fecha').value || new Date().toISOString().slice(0, 10);
   const cliente = document.getElementById('ped-cliente').value.trim();
@@ -850,79 +855,95 @@ function handleAddPedido(e) {
     return;
   }
 
-  // Generar ID correlativo PED-XXX
-  const existing = DB3D.queryAll('SELECT id FROM pedidos');
-  let maxNum = 0;
-  for (const r of existing) {
-    const m = String(r.id).match(/(\d+)/);
-    if (m) maxNum = Math.max(maxNum, Number(m[1]));
-  }
-  const nextId = 'PED-' + String(maxNum + 1).padStart(3, '0');
-
-  DB3D.run(
-    'INSERT INTO pedidos (id, fecha, cliente, estado) VALUES (?, ?, ?, ?)',
-    [nextId, fecha, cliente, estado]
-  );
-
-  for (const l of lineasValidas) {
-    let descripcion = l.refId;
-    if (l.tipo === 'combo') {
-      const idNum = Number(String(l.refId).replace('CMB-', ''));
-      const cmb = (window.__lastCombosGuardados || []).find(c => Number(c.id) === idNum);
-      if (cmb) {
-        descripcion = `${cmb.nombre_combo || cmb.opcion_elegida} [${cmb.composicion}]`;
+  try {
+    const nextId = await DB3D.getNextPedidoId();
+    const itemsToInsert = lineasValidas.map(l => {
+      let descripcion = l.refId;
+      if (l.tipo === 'combo') {
+        const idNum = Number(String(l.refId).replace('CMB-', ''));
+        const cmb = (window.__lastCombosGuardados || []).find(c => Number(c.id) === idNum);
+        if (cmb) {
+          descripcion = `${cmb.nombre_combo || cmb.opcion_elegida} [${cmb.composicion}]`;
+        }
+      } else {
+        const art = (window.__lastRegistroCalc || []).find(r => r.id_articulo === l.refId);
+        if (art) {
+          descripcion = art.nombre_articulo;
+        }
       }
-    } else {
-      const art = (window.__lastRegistroCalc || []).find(r => r.id_articulo === l.refId);
-      if (art) {
-        descripcion = art.nombre_articulo;
-      }
-    }
 
-    DB3D.run(`
-      INSERT INTO pedido_items (pedido_id, tipo_item, ref_id, descripcion, cantidad, precio_unitario)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `, [nextId, l.tipo, l.refId, descripcion, l.cantidad, l.precioUnitario]);
+      return {
+        pedido_id: nextId,
+        tipo_item: l.tipo,
+        ref_id: l.refId,
+        descripcion,
+        cantidad: l.cantidad,
+        precio_unitario: l.precioUnitario
+      };
+    });
+
+    await DB3D.insertPedidoWithItems({ id: nextId, fecha, cliente, estado }, itemsToInsert);
+
+    e.target.reset();
+    document.getElementById('ped-fecha').value = new Date().toISOString().slice(0, 10);
+    pedidoDraftLineas = [{ tipo: 'articulo', refId: '', cantidad: 1, precioUnitario: 0 }];
+    await refreshAll();
+    showToast(`✅ Pedido ${nextId} para ${cliente} (${lineasValidas.length} ítem/s) creado`);
+  } catch (err) {
+    showToast('❌ Error: ' + err.message);
   }
-
-  e.target.reset();
-  document.getElementById('ped-fecha').value = new Date().toISOString().slice(0, 10);
-  pedidoDraftLineas = [{ tipo: 'articulo', refId: '', cantidad: 1, precioUnitario: 0 }];
-  refreshAll();
-  showToast(`✅ Pedido ${nextId} para ${cliente} (${lineasValidas.length} ítem/s) creado`);
 }
 
-function updatePedidoItemCant(itemId, cant) {
-  const c = Math.max(1, Math.floor(Number(cant) || 1));
-  DB3D.run('UPDATE pedido_items SET cantidad = ? WHERE id = ?', [c, itemId]);
-  refreshAll();
-  showToast('Cantidad del ítem actualizada');
+async function updatePedidoItemCant(itemId, cant) {
+  try {
+    const c = Math.max(1, Math.floor(Number(cant) || 1));
+    await DB3D.updatePedidoItem(itemId, { cantidad: c });
+    await refreshAll();
+    showToast('Cantidad del ítem actualizada');
+  } catch (err) {
+    showToast('❌ Error: ' + err.message);
+  }
 }
 
-function updatePedidoItemPrecio(itemId, precio) {
-  const p = Math.max(0, Number(precio) || 0);
-  DB3D.run('UPDATE pedido_items SET precio_unitario = ? WHERE id = ?', [p, itemId]);
-  refreshAll();
-  showToast('Precio del ítem actualizado');
+async function updatePedidoItemPrecio(itemId, precio) {
+  try {
+    const p = Math.max(0, Number(precio) || 0);
+    await DB3D.updatePedidoItem(itemId, { precio_unitario: p });
+    await refreshAll();
+    showToast('Precio del ítem actualizado');
+  } catch (err) {
+    showToast('❌ Error: ' + err.message);
+  }
 }
 
-function deletePedidoItem(itemId) {
-  DB3D.run('DELETE FROM pedido_items WHERE id = ?', [itemId]);
-  refreshAll();
-  showToast('Ítem quitado del pedido');
+async function deletePedidoItem(itemId) {
+  try {
+    await DB3D.deletePedidoItem(itemId);
+    await refreshAll();
+    showToast('Ítem quitado del pedido');
+  } catch (err) {
+    showToast('❌ Error: ' + err.message);
+  }
 }
 
-function updatePedidoEstado(id, estado) {
-  DB3D.run('UPDATE pedidos SET estado = ? WHERE id = ?', [estado, id]);
-  refreshAll();
-  showToast(`Estado de ${id}: ${estado}`);
+async function updatePedidoEstado(id, estado) {
+  try {
+    await DB3D.updatePedidoEstado(id, estado);
+    await refreshAll();
+    showToast(`Estado de ${id}: ${estado}`);
+  } catch (err) {
+    showToast('❌ Error: ' + err.message);
+  }
 }
 
-function deletePedido(id) {
-  DB3D.run('DELETE FROM pedido_items WHERE pedido_id = ?', [id]);
-  DB3D.run('DELETE FROM pedidos WHERE id = ?', [id]);
-  refreshAll();
-  showToast(`Pedido ${id} eliminado`);
+async function deletePedido(id) {
+  try {
+    await DB3D.deletePedido(id);
+    await refreshAll();
+    showToast(`Pedido ${id} eliminado`);
+  } catch (err) {
+    showToast('❌ Error: ' + err.message);
+  }
 }
 
 /* ============================================================================
@@ -968,7 +989,7 @@ function renderEscalasReales(escalasReales, params) {
   }).join('');
 }
 
-function handleAddEscalaReal(e) {
+async function handleAddEscalaReal(e) {
   e.preventDefault();
   const fecha = document.getElementById('esc-fecha').value || new Date().toISOString().slice(0, 10);
   const nombreRaw = document.getElementById('esc-art').value.trim();
@@ -984,60 +1005,71 @@ function handleAddEscalaReal(e) {
     return;
   }
 
-  const artObj = DB3D.getOrCreateArticulo(nombreRaw);
+  try {
+    const artObj = await DB3D.getOrCreateArticulo(nombreRaw);
 
-  DB3D.run(`
-    INSERT INTO escalas_reales (
-      fecha, id_articulo, cantidad, gramos_lote, tiempo_impresion_lote_h,
-      tiempo_preparacion_lote_h, tiempo_postprocesado_unit_h, factor_multiplicador
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `, [
-    fecha,
-    artObj.id_articulo,
-    cantidad,
-    gramos,
-    impH,
-    Number.isFinite(prepParsed) ? prepParsed : 0,
-    Number.isFinite(postParsed) ? postParsed : 0,
-    factor
-  ]);
+    await DB3D.insertEscalaReal({
+      fecha,
+      id_articulo: artObj.id_articulo,
+      cantidad,
+      gramos_lote: gramos,
+      tiempo_impresion_lote_h: impH,
+      tiempo_preparacion_lote_h: Number.isFinite(prepParsed) ? prepParsed : 0,
+      tiempo_postprocesado_unit_h: Number.isFinite(postParsed) ? postParsed : 0,
+      factor_multiplicador: factor
+    });
 
-  e.target.reset();
-  document.getElementById('esc-fecha').value = new Date().toISOString().slice(0, 10);
-  document.getElementById('esc-cant').value = 1;
-  document.getElementById('esc-prep').value = '00:05';
-  document.getElementById('esc-post').value = '00:00';
-  document.getElementById('esc-factor').value = '2.5';
-  refreshAll();
-  showToast(`✅ Medición BambuStudio guardada (${artObj.id_articulo} | ${artObj.nombre} x${cantidad})`);
+    e.target.reset();
+    document.getElementById('esc-fecha').value = new Date().toISOString().slice(0, 10);
+    document.getElementById('esc-cant').value = 1;
+    document.getElementById('esc-prep').value = '00:05';
+    document.getElementById('esc-post').value = '00:00';
+    document.getElementById('esc-factor').value = '2.5';
+    await refreshAll();
+    showToast(`✅ Medición BambuStudio guardada (${artObj.id_articulo} | ${artObj.nombre} x${cantidad})`);
+  } catch (err) {
+    showToast('❌ Error: ' + err.message);
+  }
 }
 
-function updateEscalaReal(id, col, val) {
+async function updateEscalaReal(id, col, val) {
   const allowed = ['gramos_lote'];
   if (!allowed.includes(col)) return;
-  DB3D.run(`UPDATE escalas_reales SET ${col} = ? WHERE id = ?`, [Math.max(0, Number(val) || 0), id]);
-  refreshAll();
-  showToast('Medición actualizada en SQLite');
+  try {
+    await DB3D.updateEscalaRealField(id, { [col]: Math.max(0, Number(val) || 0) });
+    await refreshAll();
+    showToast('Medición actualizada en Supabase');
+  } catch (err) {
+    showToast('❌ Error: ' + err.message);
+  }
 }
 
-function updateEscalaRealTime(id, col, inputEl) {
+async function updateEscalaRealTime(id, col, inputEl) {
   const allowed = ['tiempo_impresion_lote_h', 'tiempo_preparacion_lote_h', 'tiempo_postprocesado_unit_h'];
   if (!allowed.includes(col)) return;
   const h = Engine3D.hhmmToHours(inputEl.value);
   if (!Number.isFinite(h) || h < 0) {
     showToast('⚠️ Formato inválido. Usá hh:mm (ej: 01:30)');
-    refreshAll();
+    await refreshAll();
     return;
   }
-  DB3D.run(`UPDATE escalas_reales SET ${col} = ? WHERE id = ?`, [h, id]);
-  refreshAll();
-  showToast('Tiempo actualizado (hh:mm)');
+  try {
+    await DB3D.updateEscalaRealField(id, { [col]: h });
+    await refreshAll();
+    showToast('Tiempo actualizado (hh:mm)');
+  } catch (err) {
+    showToast('❌ Error: ' + err.message);
+  }
 }
 
-function deleteEscalaReal(id) {
-  DB3D.run('DELETE FROM escalas_reales WHERE id = ?', [id]);
-  refreshAll();
-  showToast('Medición eliminada');
+async function deleteEscalaReal(id) {
+  try {
+    await DB3D.deleteEscalaReal(id);
+    await refreshAll();
+    showToast('Medición eliminada');
+  } catch (err) {
+    showToast('❌ Error: ' + err.message);
+  }
 }
 
 /* ============================================================================
@@ -1059,79 +1091,13 @@ function renderParametros(paramRows) {
   `).join('');
 }
 
-function updateParametro(clave, valor) {
-  DB3D.run('UPDATE parametros_base SET valor = ? WHERE clave = ?', [Number(valor) || 0, clave]);
-  refreshAll();
-  showToast('Parámetro actualizado — Todos los costos recalculados');
-}
-
-/* ============================================================================
-   HERRAMIENTAS DE BASE DE DATOS SQLITE (Exportar, Importar, SQL Console, Reset)
-   ============================================================================ */
-function exportarSQLite() {
-  const data = DB3D.exportBinary();
-  const blob = new Blob([data], { type: 'application/x-sqlite3' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `gestion_impresion_3d_${new Date().toISOString().slice(0, 10)}.sqlite`;
-  a.click();
-  URL.revokeObjectURL(url);
-  showToast('📥 Archivo .sqlite descargado');
-}
-
-function importarSQLite(event) {
-  const file = event.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = function () {
-    try {
-      DB3D.importBinary(reader.result);
-      refreshAll();
-      showToast('✅ Base de datos .sqlite importada correctamente');
-    } catch (err) {
-      alert('Error al leer el archivo SQLite: ' + err.message);
-    }
-  };
-  reader.readAsArrayBuffer(file);
-}
-
-function resetearExcelOriginal() {
-  if (!confirm('¿Restaurar la base de datos SQLite a los datos iniciales? Se perderán los cambios locales.')) return;
-  DB3D.resetToExcelSeed();
-  pedidoDraftLineas = [{ tipo: 'articulo', refId: '', cantidad: 1, precioUnitario: 0 }];
-  refreshAll();
-  showToast('🔄 Base restaurada a los datos iniciales');
-}
-
-function toggleSqlConsole() {
-  document.getElementById('sql-console').classList.toggle('open');
-}
-
-function ejecutarSQLManual() {
-  const sql = document.getElementById('sql-input').value.trim();
-  const out = document.getElementById('sql-output');
-  if (!sql) return;
+async function updateParametro(clave, valor) {
   try {
-    const res = DB3D.execRaw(sql);
-    refreshAll();
-    if (!res || res.length === 0) {
-      out.innerHTML = '<span class="badge badge-green">✅ Consulta ejecutada sin filas de retorno.</span>';
-      return;
-    }
-    const { columns, values } = res[0];
-    out.innerHTML = `
-      <div class="table-wrap" style="margin-top:0.5rem;">
-        <table>
-          <thead><tr>${columns.map(c => `<th>${escHtml(c)}</th>`).join('')}</tr></thead>
-          <tbody>
-            ${values.map(row => `<tr>${row.map(cell => `<td>${cell === null ? 'NULL' : escHtml(cell)}</td>`).join('')}</tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
-    `;
+    await DB3D.updateParametro(clave, Number(valor) || 0);
+    await refreshAll();
+    showToast('Parámetro actualizado — Todos los costos recalculados');
   } catch (err) {
-    out.innerHTML = `<span class="badge badge-red">❌ Error SQL: ${escHtml(err.message)}</span>`;
+    showToast('❌ Error: ' + err.message);
   }
 }
 
@@ -1154,14 +1120,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('ped-fecha').value = hoy;
   document.getElementById('esc-fecha').value = hoy;
 
-  // Inicializar SQLite WebAssembly
+  // Inicializar Supabase
   try {
     await DB3D.init();
-    document.getElementById('db-status-badge').textContent = '🟢 SQLite Activo (En Tiempo Real)';
-    refreshAll();
+    document.getElementById('db-status-badge').textContent = '🟢 Supabase Conectado (PostgreSQL)';
+    await refreshAll();
   } catch (err) {
     console.error(err);
-    document.getElementById('db-status-badge').textContent = '🔴 Error cargando SQLite';
-    alert('No se pudo inicializar sql.js. Verificá tu conexión a internet para cargar el motor WebAssembly.');
+    document.getElementById('db-status-badge').textContent = '🔴 Error conectando a Supabase';
+    showToast('⚠️ Configurá SUPABASE_URL y SUPABASE_ANON_KEY en db.js');
   }
 });

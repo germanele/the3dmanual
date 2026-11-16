@@ -1,23 +1,33 @@
-# Gestión Impresión 3D — Costos, Cotizador y Combos (Uruguay)
+# Gestión Impresión 3D — Costos, Cotizador y Combos (Uruguay) | Supabase
 
-Aplicación web ejecutada 100% en el navegador con **SQLite real (WebAssembly via `sql.js`)**, pre-cargada con todos los datos y fórmulas convertidas del archivo `Gestión Impresión 3D - Costos y Combos (Uruguay).xlsx`.
+Aplicación web migrada de SQLite local a **Supabase (PostgreSQL)** en la nube.
 
 ## Contenido del Paquete
-- `index-standalone.html`: Versión autocontenida (HTML + CSS + JS + SQLite Seed). Se puede abrir haciendo **doble clic directo** sin instalar nada ni levantar un servidor.
-- `index.html`, `styles.css`, `engine.js`, `db.js`, `app.js`: Versión modular separada por capas (Interfaz, Motor de Fórmulas Excel y Persistencia SQLite).
-- `gestion_3d.sqlite`: Archivo binario SQLite real pre-poblado con las tablas y registros del Excel.
+- `supabase_schema.sql`: Script SQL completo para crear todas las tablas, triggers, vistas, políticas RLS y datos iniciales (seed) en PostgreSQL/Supabase.
+- `index.html`: Interfaz web conectada mediante CDN al SDK oficial `@supabase/supabase-js@2`.
+- `db.js`: Capa de acceso a datos asíncrona (`async/await`) contra Supabase.
+- `app.js`: Controlador de interfaz actualizado para operaciones asíncronas en tiempo real.
+- `engine.js`: Motor matemático de cálculo de costos, escalas y combos (sin cambios).
+- `styles.css`: Hojas de estilo de la aplicación.
 
-## Cómo Implementarlo
+## Pasos para Ponerlo en Marcha
 
-### Opción A: Ejecución Instantánea (Sin Servidor)
-1. Descomprimí el archivo ZIP.
-2. Hacé **doble clic en `index-standalone.html`** para abrirlo en Chrome, Edge, Firefox o Brave.
-3. Todos los cambios (agregar, modificar o eliminar registros) se guardan en tiempo real en la base SQLite en memoria y se persisten automáticamente en `localStorage`.
+### 1. Configurar la Base de Datos en Supabase
+1. Ingresá a tu proyecto en [Supabase](https://supabase.com/).
+2. Andá a la sección **SQL Editor** -> **New query**.
+3. Copiá y pegá todo el contenido del archivo `supabase_schema.sql` y ejecutalo (**Run**). Esto creará las tablas y cargará los datos iniciales.
 
-### Opción B: Servidor Local o Hosting Estático (Versión Modular)
-1. Abrí una terminal en la carpeta descomprimida y ejecutá cualquiera de estos comandos:
-   - **Python**: `python -m http.server 8080`
-   - **Node.js**: `npx serve .`
-   - **VS Code**: Clic derecho en `index.html` -> *Open with Live Server*.
-2. Abrí `http://localhost:8080` en tu navegador.
-3. Podés descargar el archivo `.sqlite` actualizado en cualquier momento desde el botón **Exportar .sqlite** o cargar `gestion_3d.sqlite` con **Importar .sqlite**.
+### 2. Configurar tus Credenciales en `db.js`
+1. En tu panel de Supabase, andá a **Project Settings** -> **API**.
+2. Copiá tu **Project URL** y tu **anon / public key**.
+3. Abrí `db.js` y reemplazá las constantes en las primeras líneas:
+   ```javascript
+   const SUPABASE_URL = 'https://tu-proyecto.supabase.co';
+   const SUPABASE_ANON_KEY = 'tu-anon-key-aqui';
+   ```
+
+### 3. Ejecutar la Aplicación Web
+Abrí una terminal en la carpeta del proyecto y levantá un servidor local (o subilo a Vercel/Netlify/GitHub Pages):
+- **Python**: `python -m http.server 8080`
+- **Node.js**: `npx serve .`
+- **VS Code**: Clic derecho en `index.html` -> *Open with Live Server*.

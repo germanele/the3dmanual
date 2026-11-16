@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Gestión Impresión 3D (Uruguay) - Estilos de Aplicación Web + SQLite
+   Gestión Impresión 3D (Uruguay) - Estilos de Aplicación Web + Supabase
    ========================================================================== */
 :root {
   --bg: #0f172a;
@@ -39,7 +39,6 @@ body {
   min-height: 100vh;
 }
 
-/* Header & Toolbar */
 .topbar {
   background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
   border-bottom: 1px solid var(--border);
@@ -101,7 +100,6 @@ body {
   font-weight: 600;
 }
 
-/* Navigation Tabs */
 .nav-tabs {
   display: flex;
   overflow-x: auto;
@@ -147,7 +145,6 @@ body {
   background: var(--bg);
 }
 
-/* Main Container */
 .container {
   max-width: 1520px;
   margin: 0 auto;
@@ -168,7 +165,6 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* Cards & Grids */
 .card {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -240,7 +236,6 @@ body {
   margin-top: 0.2rem;
 }
 
-/* Forms & Inputs */
 .form-row {
   display: flex;
   flex-wrap: wrap;
@@ -292,7 +287,6 @@ input[type="number"] {
   font-size: 0.82rem;
 }
 
-/* Buttons */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -346,7 +340,6 @@ input[type="number"] {
   font-size: 0.78rem;
 }
 
-/* Tables */
 .table-wrap {
   overflow-x: auto;
   border: 1px solid var(--border);
@@ -392,7 +385,6 @@ tr:hover td {
   text-align: center;
 }
 
-/* Badges & Semáforo */
 .badge {
   display: inline-flex;
   align-items: center;
@@ -428,7 +420,6 @@ tr:hover td {
   border: 1px solid rgba(59, 130, 246, 0.4);
 }
 
-/* Desglose Cotizador */
 .breakdown-list {
   display: flex;
   flex-direction: column;
@@ -461,29 +452,6 @@ tr:hover td {
   font-variant-numeric: tabular-nums;
 }
 
-/* SQL Console */
-.sql-console {
-  display: none;
-  margin-top: 0.75rem;
-  background: #0b1120;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1rem;
-}
-
-.sql-console.open {
-  display: block;
-}
-
-.sql-console textarea {
-  width: 100%;
-  font-family: 'Fira Code', 'Consolas', monospace;
-  font-size: 0.83rem;
-  min-height: 75px;
-  margin-bottom: 0.5rem;
-}
-
-/* Toast Notification */
 .toast {
   position: fixed;
   bottom: 1.25rem;
@@ -513,7 +481,7 @@ tr:hover td {
   height: 290px;
   width: 100%;
 }
-/* Inputs hh:mm y badges de ID bloqueado */
+
 .hhmm-input {
   font-family: 'Fira Code', 'Consolas', monospace;
   font-variant-numeric: tabular-nums;
@@ -550,7 +518,6 @@ tr:hover td {
   font-weight: 600;
 }
 
-/* Constructor Multi-Ítem de Pedidos de Clientes */
 .order-items-box {
   margin-top: 1rem;
   padding: 1rem;

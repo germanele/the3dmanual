@@ -6,7 +6,6 @@
  */
 
 const Engine3D = (() => {
-  // Redondeo estándar idéntico a Excel ROUND(val, decimals)
   function excelRound(val, decimals = 2) {
     if (!Number.isFinite(val)) return 0;
     const factor = Math.pow(10, decimals);
@@ -16,7 +15,6 @@ const Engine3D = (() => {
     return Math.ceil(val * factor - 0.5 - 1e-12) / factor;
   }
 
-  // Redondeo hacia arriba idéntico a Excel ROUNDUP(val, decimals)
   function excelRoundUp(val, decimals = 0) {
     if (!Number.isFinite(val)) return 0;
     const factor = Math.pow(10, decimals);
@@ -30,9 +28,6 @@ const Engine3D = (() => {
     return String(s || '').trim().toLowerCase();
   }
 
-  /**
-   * Convierte horas decimales a formato "hh:mm" (ej. 2.5 -> "02:30", 1.233333 -> "01:14")
-   */
   function hoursToHHMM(hours) {
     if (!Number.isFinite(hours) || hours <= 0) return '00:00';
     const totalMinutes = Math.round(hours * 60);
@@ -41,16 +36,11 @@ const Engine3D = (() => {
     return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
   }
 
-  /**
-   * Convierte una cadena "hh:mm" a horas decimales.
-   * Retorna null si está vacía, o NaN si el formato es inválido.
-   */
   function hhmmToHours(str) {
     if (str === null || str === undefined) return null;
     const clean = String(str).trim();
     if (!clean) return null;
 
-    // Aceptar formato HH:MM o H:M
     const match = clean.match(/^(\d+):([0-5]?\d)$/);
     if (match) {
       const hh = parseInt(match[1], 10);
@@ -59,7 +49,6 @@ const Engine3D = (() => {
       return hh + (mm / 60.0);
     }
 
-    // Aceptar 4 dígitos compactos tipo "0230" -> 02:30
     const compact = clean.match(/^(\d{2,4})([0-5]\d)$/);
     if (compact && !clean.includes('.') && !clean.includes(',')) {
       const hh = parseInt(compact[1], 10);
@@ -70,9 +59,6 @@ const Engine3D = (() => {
     return NaN;
   }
 
-  /**
-   * Normaliza un string de tiempo a "hh:mm" si es válido, o retorna null si es inválido
-   */
   function normalizeHHMM(str) {
     const h = hhmmToHours(str);
     if (h === null) return '';
@@ -80,9 +66,6 @@ const Engine3D = (() => {
     return hoursToHHMM(h);
   }
 
-  /**
-   * Convierte el array de filas de la tabla `parametros_base` en un objeto clave->valor
-   */
   function mapParametros(paramRows) {
     const p = {
       energia_kwh: 11.0,
@@ -101,10 +84,6 @@ const Engine3D = (() => {
     return p;
   }
 
-  /**
-   * Fórmula base de Costo Unitario:
-   * =ROUND((((D/C)/1000)*PrecioPlasticoUSD*Dolar) + ((E/C)*(ConsumoW/1000)*EnergiaKWh) + ((E/C)*DesgasteH) + (((F/C)+G)*TiempoManualH), 2)
-   */
   function calcularCostoBaseUnitario(cantidad, gramosLote, impLoteH, prepLoteH, postUnitH, params) {
     if (!cantidad || cantidad < 1) return 0;
     const gramosUnit = gramosLote / cantidad;
@@ -119,14 +98,10 @@ const Engine3D = (() => {
     return excelRound(costoPlastico + costoElectricidad + costoDesgaste + costoManoObra, 2);
   }
 
-  /**
-   * Resuelve gramos y tiempos de un artículo (por id_articulo) y cantidad buscando primero en `escalas_reales`
-   */
   function resolverDatosArticulo(idArticulo, cantidad, escalasReales, manualOverride = null) {
     const idNorm = normStr(idArticulo);
     const cant = Math.max(1, Math.floor(Number(cantidad) || 1));
 
-    // 1. Buscar coincidencia exacta (id_articulo + cantidad) en _EscalasReales
     const exacta = escalasReales.find(
       e => normStr(e.id_articulo) === idNorm && Number(e.cantidad) === cant
     );
@@ -143,10 +118,8 @@ const Engine3D = (() => {
       };
     }
 
-    // 2. Buscar primera referencia del artículo en _EscalasReales para prorratear si hace falta
     const ref = escalasReales.find(e => normStr(e.id_articulo) === idNorm);
 
-    // 3. Si hay carga manual nueva de BambuStudio
     if (manualOverride && Number(manualOverride.gramos) > 0 && Number(manualOverride.impH) > 0) {
       const prepH = (manualOverride.prepH !== null && Number.isFinite(Number(manualOverride.prepH)) && Number(manualOverride.prepH) >= 0)
         ? Number(manualOverride.prepH)
@@ -164,7 +137,6 @@ const Engine3D = (() => {
       };
     }
 
-    // 4. Fallback estimado proporcional a partir de la primera medición disponible
     if (ref) {
       const factorEscala = cant / Number(ref.cantidad);
       return {
@@ -191,9 +163,6 @@ const Engine3D = (() => {
     };
   }
 
-  /**
-   * Calcula las columnas de una fila de 'Artículos / Registro de Costos'
-   */
   function calcularFilaRegistroCostos(fila, escalasReales, todasFilasRegistro, params) {
     const cant = Math.max(1, Math.floor(Number(fila.cantidad) || 1));
     const factor = Number(fila.factor_multiplicador) || params.factor_defecto;
@@ -215,7 +184,6 @@ const Engine3D = (() => {
     const gananciaNetaUnit = excelRound(precioVentaUnit - costoBaseUnit, 2);
     const margenPct = precioVentaUnit > 0 ? (gananciaNetaUnit / precioVentaUnit) : 0;
 
-    // Costo Base (si fuera 1 u.) + Semáforo Verde/Ámbar
     const idNorm = normStr(fila.id_articulo);
     const esc1 = escalasReales.find(
       e => normStr(e.id_articulo) === idNorm && Number(e.cantidad) === 1
@@ -287,9 +255,6 @@ const Engine3D = (() => {
     };
   }
 
-  /**
-   * Simula el 'Cotizador Dinámico' completo (desglose + tabla de escalas 1, 3, 5, 10, 20)
-   */
   function cotizarDinamico({ idArticulo, nombreArticulo, cantidad, factor, manualGramos, manualImpH, manualPrepH }, escalasReales, params) {
     const cant = Math.max(1, Math.floor(Number(cantidad) || 1));
     const fact = Number(factor) || params.factor_defecto;
@@ -313,7 +278,6 @@ const Engine3D = (() => {
     const gananciaNetaUnit = excelRound(precioVentaUnit - costoBaseUnit, 2);
     const gananciaNetaLote = excelRound(gananciaNetaUnit * cant, 2);
 
-    // Comparativa Venta 1 Unidad
     const idNorm = normStr(idArticulo);
     const esc1 = escalasReales.find(
       e => normStr(e.id_articulo) === idNorm && Number(e.cantidad) === 1
@@ -330,7 +294,6 @@ const Engine3D = (() => {
 
     const peUnidades = precioVentaUnit > 0 ? excelRoundUp(costoBaseLote / precioVentaUnit, 0) : 0;
 
-    // Tabla de Escala Automática por Volumen (1, 3, 5, 10, 20 unidades)
     const escalasObjetivo = [1, 3, 5, 10, 20];
     const tablaEscalas = escalasObjetivo.map(n => {
       const dEsc = resolverDatosArticulo(idArticulo, n, escalasReales);
@@ -384,9 +347,6 @@ const Engine3D = (() => {
     };
   }
 
-  /**
-   * Armador Dinámico de Combos por Presupuesto
-   */
   function calcularCombos(presupuestoCliente, factorComboGlobal, lineasSeleccionadas, filasRegistroCalculadas, escalasReales, params) {
     const presupuesto = Math.max(0, Number(presupuestoCliente) || 0);
 
@@ -447,7 +407,6 @@ const Engine3D = (() => {
     const k2 = Math.max(0, presupuesto - sumPfix);
     const j2 = sumPvar > 0 ? Math.floor(k2 / sumPvar) : 0;
 
-    // Opción 1: Equilibrada
     let remOp1 = k2 - j2 * sumPvar;
     for (const x of items) {
       if (remOp1 >= x.p_var - 1e-9) {
@@ -458,7 +417,6 @@ const Engine3D = (() => {
       }
     }
 
-    // Opción 2: Máxima Cantidad
     const sumW2 = items.reduce((acc, x) => acc + (x.p_var > 0 ? 1 / (x.p_var * x.p_var) : 0), 0);
     for (const x of items) {
       const w2 = x.p_var > 0 ? 1 / (x.p_var * x.p_var) : 0;
@@ -477,7 +435,6 @@ const Engine3D = (() => {
       rem2 -= ext * x.p_var;
     }
 
-    // Opción 3: Máxima Ganancia
     const sumW3 = items.reduce((acc, x) => acc + (x.g_var * x.g_var), 0);
     for (const x of items) {
       const w3 = x.g_var * x.g_var;
@@ -496,7 +453,6 @@ const Engine3D = (() => {
       rem3 -= ext * x.p_var;
     }
 
-    // Evaluar métricas finales de cada opción
     const evaluar = (nombre, key) => {
       const partes = [];
       let totalPiezas = 0;

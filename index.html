@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Gestión Impresión 3D - Costos, Combos y Clientes (Uruguay) | SQLite App</title>
+  <title>Gestión Impresión 3D - Costos, Combos y Clientes (Uruguay) | Supabase</title>
   <link rel="stylesheet" href="styles.css">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -18,39 +18,15 @@
       <div class="brand-icon">3D</div>
       <div>
         <h1>Gestión Impresión 3D — Artículos, Cotizador, Combos &amp; Clientes (Uruguay)</h1>
-        <p>Motor SQLite en Navegador (WebAssembly) + Persistencia Automática + Tiempos hh:mm</p>
+        <p>Base de Datos en la Nube Supabase (PostgreSQL) + Tiempos hh:mm</p>
       </div>
     </div>
 
     <div class="db-actions">
-      <span id="db-status-badge" class="db-status">⏳ Iniciando SQLite...</span>
-      <button class="btn btn-outline btn-sm" onclick="toggleSqlConsole()">🖥️ Consola SQL</button>
-      <button class="btn btn-primary btn-sm" onclick="exportarSQLite()">📥 Exportar .sqlite</button>
-      <label class="btn btn-outline btn-sm" style="cursor:pointer;">
-        📤 Importar .sqlite
-        <input type="file" accept=".sqlite,.db,.sqlite3" style="display:none;" onchange="importarSQLite(event)">
-      </label>
-      <button class="btn btn-danger btn-sm" onclick="resetearExcelOriginal()">🔄 Restaurar Datos Base</button>
+      <span id="db-status-badge" class="db-status">⏳ Conectando a Supabase...</span>
+      <button class="btn btn-primary btn-sm" onclick="refreshAll()">🔄 Sincronizar</button>
     </div>
   </header>
-
-  <!-- CONSOLA SQL EN VIVO -->
-  <div class="container" style="padding-bottom:0;">
-    <div id="sql-console" class="sql-console">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
-        <strong style="font-size:0.85rem; color:var(--accent);">Consola SQL Directa sobre SQLite en Memoria</strong>
-        <span style="font-size:0.75rem; color:var(--text-muted);">Tablas: articulos, parametros_base, escalas_reales, registro_costos, combos_guardados, pedidos, pedido_items</span>
-      </div>
-      <textarea id="sql-input">SELECT * FROM v_pedidos;</textarea>
-      <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-        <button class="btn btn-primary btn-sm" onclick="ejecutarSQLManual()">▶ Ejecutar SQL</button>
-        <button class="btn btn-outline btn-sm" onclick="document.getElementById('sql-input').value='SELECT * FROM articulos;'">Ver Artículos</button>
-        <button class="btn btn-outline btn-sm" onclick="document.getElementById('sql-input').value='SELECT * FROM escalas_reales;'">Ver _EscalasReales</button>
-        <button class="btn btn-outline btn-sm" onclick="document.getElementById('sql-input').value='SELECT * FROM parametros_base;'">Ver Parámetros</button>
-      </div>
-      <div id="sql-output" style="margin-top:0.65rem;"></div>
-    </div>
-  </div>
 
   <!-- NAVEGACIÓN POR PESTAÑAS -->
   <nav class="nav-tabs">
@@ -71,7 +47,7 @@
         <div class="card-header">
           <div>
             <h2 class="card-title">Agregar Artículo / Lote al Catálogo</h2>
-            <p class="card-subtitle">Ingresá únicamente el nombre del artículo; el identificador secuencial <strong>ART-XXX</strong> se asigna automáticamente en la base de datos y no es modificable. Tiempos en formato <strong>hh:mm</strong>.</p>
+            <p class="card-subtitle">Ingresá únicamente el nombre del artículo; el identificador secuencial <strong>ART-XXX</strong> se asigna automáticamente en Supabase y no es modificable. Tiempos en formato <strong>hh:mm</strong>.</p>
           </div>
         </div>
         <form class="form-row" onsubmit="handleAddRegistro(event)">
@@ -161,7 +137,6 @@
          ==================================================================== -->
     <section id="tab-cotizador" class="tab-panel">
       <div class="grid-2">
-        <!-- Columna Izquierda: Configuración + Carga Rápida BambuStudio -->
         <div>
           <div class="card">
             <div class="card-header">
@@ -214,12 +189,11 @@
                 <label>Prep. Opcional (hh:mm)</label>
                 <input type="text" id="cot-manual-prep" class="hhmm-input" style="width:120px;" placeholder="Ej: 00:09" onblur="handleHHMMBlur(this)" oninput="refreshAll()">
               </div>
-              <button type="button" class="btn btn-success" onclick="guardarMedicionDesdeCotizador()">💾 Guardar en SQLite</button>
+              <button type="button" class="btn btn-success" onclick="guardarMedicionDesdeCotizador()">💾 Guardar en Supabase</button>
             </div>
           </div>
         </div>
 
-        <!-- Columna Derecha: Desglose en Tiempo Real -->
         <div class="card">
           <div class="card-header">
             <h2 class="card-title">3. Desglose de Tiempos y Costos en Tiempo Real</h2>
@@ -278,7 +252,6 @@
         </div>
       </div>
 
-      <!-- Tabla de Escala Automática + Gráfico -->
       <div class="grid-2">
         <div class="card">
           <div class="card-header">
@@ -321,7 +294,7 @@
         <div class="card-header">
           <div>
             <h2 class="card-title">Armador Dinámico de Combos por Presupuesto del Cliente</h2>
-            <p class="card-subtitle">Asignale un nombre a tu combo y guardalo en SQLite para luego reutilizarlo directamente al crear pedidos de clientes.</p>
+            <p class="card-subtitle">Asignale un nombre a tu combo y guardalo en Supabase para luego reutilizarlo directamente al crear pedidos de clientes.</p>
           </div>
           <div class="form-row">
             <div class="form-group" style="flex: 1.5; min-width: 210px;">
@@ -395,7 +368,7 @@
 
       <div class="card">
         <div class="card-header">
-          <h2 class="card-title">Historial de Combos Guardados (SQLite)</h2>
+          <h2 class="card-title">Historial de Combos Guardados (Supabase)</h2>
         </div>
         <div class="table-wrap">
           <table>
@@ -427,7 +400,7 @@
         <div class="kpi-card">
           <div class="kpi-label">Total Pedidos</div>
           <div class="kpi-value" id="kpi-ped-total">0</div>
-          <div class="kpi-sub">Registrados en SQLite</div>
+          <div class="kpi-sub">Registrados en Supabase</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-label">Ingresos Entregados</div>
@@ -532,13 +505,13 @@
     </section>
 
     <!-- ====================================================================
-         PESTAÑA 5: MEDICIONES REALES (_EscalasReales)
+         PESTAÑA 5: MEDICIONES REALES (escalas_reales)
          ==================================================================== -->
     <section id="tab-escalas" class="tab-panel">
       <div class="card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">Registrar Nueva Medición Real de BambuStudio (_EscalasReales)</h2>
+            <h2 class="card-title">Registrar Nueva Medición Real de BambuStudio</h2>
             <p class="card-subtitle">Ingresá el nombre del artículo (su ID <strong>ART-XXX</strong> se resuelve o crea automáticamente en la BD) y los tiempos en formato <strong>hh:mm</strong>.</p>
           </div>
         </div>
@@ -588,7 +561,7 @@
 
       <div class="card">
         <div class="card-header">
-          <h2 class="card-title">Base de Mediciones Reales en Slicer (_EscalasReales)</h2>
+          <h2 class="card-title">Base de Mediciones Reales en Slicer</h2>
         </div>
         <div class="table-wrap">
           <table>
