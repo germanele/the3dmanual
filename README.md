@@ -8,9 +8,16 @@ Conserva la lógica y el propósito del original:
 - **Catálogo y costos** con semáforo N=1 (medición real vs. piso estimado).
 - **Cotizador dinámico** por cantidad, con tabla de escalas y curva costo/precio.
 - **Armador de combos** por presupuesto (3 estrategias + armado manual).
-- **Clientes y pedidos** multi-artículo / multi-combo con estados y KPIs.
+- **Clientes** con ficha, datos fiscales y cantidad de pedidos.
+- **Pedidos** multi-artículo / multi-combo con estados y KPIs.
 - **Mediciones reales del slicer** (BambuStudio) con tiempos `hh:mm`.
+- **Inventario de filamento** con bobinas, stock, alertas y movimientos.
 - **Parámetros base** editables que recalculan toda la aplicación.
+
+La interfaz tiene **8 módulos/pestañas**, separados para que cada área tenga su
+propio espacio. `Mediciones` sigue teniendo el selector de filamento para
+descontar consumo; el alta y el libro de movimientos viven en `Inventario de
+filamento`.
 
 ### Novedades
 
@@ -25,15 +32,18 @@ Conserva la lógica y el propósito del original:
   sesión la BD no devuelve ningún dato.
 - **Clientes con datos fiscales**: cada cliente guarda RUT, razón social,
   teléfono, email, dirección y notas. Al facturar, el pedido copia RUT y razón
-  social y permite cargar número y fecha de factura. La tabla de clientes queda
-  dentro del módulo *Clientes y pedidos* (no agregamos una séptima pestaña).
-- **Stock de filamento**: dentro de *Mediciones del slicer* se cargan bobinas con
-  kg disponibles, alerta y costo por kg. Al guardar una medición nueva podés
-  elegir un filamento: el consumo (gramos / 1000) se descuenta en la misma
-  transacción y queda registrado en un libro de entradas, consumos y ajustes.
+  social y permite cargar número y fecha de factura. Todo queda en el módulo
+  **Clientes**, separado de **Pedidos**.
+- **Inventario de filamento**: módulo propio con bobinas, kg disponibles, alerta
+  y costo por kg, más sus **últimos movimientos**. Al guardar una medición nueva
+  podés elegir una bobina: el consumo (gramos / 1000) se descuenta en la misma
+  transacción y queda registrado en el libro de entradas, consumos y ajustes.
 - **Borrados confirmados**: reemplazamos los `confirm()` del navegador por un
   modal propio. Al borrar un pedido podés elegir **anularlo** (marca *Cancelado*
   y conserva el histórico) o **eliminarlo** definitivamente.
+- **Menú lateral fijo**: los 8 módulos viven en una barra a la izquierda que
+  permanece visible al desplazarte por las tablas largas. En pantallas chicas se
+  reduce a iconos para no robar espacio.
 
 > Orden de migraciones sobre una BD ya existente:
 > `migration_factura.sql` → `auth_rls.sql` → `mejoras.sql`.
@@ -171,7 +181,7 @@ gestion_impresion_3d_v2/
 ├── engine.js             ← motor de cálculo (fórmulas, hh:mm, IVA, combos, equilibrio)
 ├── db.js                 ← capa de persistencia y adaptadores al modelo de vista
 ├── app.js                ← controlador: estado central, render por módulo, eventos
-├── index.html            ← interfaz de los 6 módulos
+├── index.html            ← interfaz de los 8 módulos
 └── styles.css            ← diseño responsive
 ```
 

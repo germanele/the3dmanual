@@ -20,6 +20,7 @@
   --rojo: #f87171;
   --radio: 12px;
   --sombra: 0 16px 38px -14px rgba(0, 0, 0, .6);
+  --sidebar: 274px;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -36,6 +37,39 @@ body {
 
 /* ------------------------------- cabecera -------------------------------- */
 
+/* ---------------------------- menú lateral ------------------------------- */
+
+.barra-lateral {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: var(--sidebar);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+  padding: 1.2rem .9rem;
+  overflow-y: auto;
+  background: rgba(11, 16, 32, .96);
+  border-right: 1px solid var(--borde);
+  backdrop-filter: blur(14px);
+}
+
+.barra-lateral .marca { padding: 0 .35rem; }
+.barra-lateral .marca h1 { font-size: 1.15rem; }
+.barra-lateral .marca p { font-size: .7rem; line-height: 1.35; }
+
+.barra-lateral-pie {
+  margin-top: auto;
+  padding: .8rem .5rem 0;
+  border-top: 1px solid var(--borde);
+  font-size: .7rem;
+  color: var(--texto-suave);
+}
+
+.contenido { margin-left: var(--sidebar); min-height: 100vh; }
+
+/* ------------------------------- cabecera -------------------------------- */
+
 .cabecera {
   position: sticky;
   top: 0;
@@ -43,9 +77,9 @@ body {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  padding: 1rem 1.6rem;
+  justify-content: flex-end;
+  gap: .6rem;
+  padding: .8rem 1.6rem;
   background: rgba(11, 16, 32, .88);
   backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--borde);
@@ -117,34 +151,54 @@ body {
 .boton-peligro:hover { background: rgba(248, 113, 113, .24); }
 .grupo-botones { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
 
-/* ------------------------------- pestañas -------------------------------- */
+/* ---------------------------- menú de módulos ---------------------------- */
 
 .pestanas {
-  display: flex; gap: .3rem;
-  padding: .7rem 1.6rem 0;
-  overflow-x: auto;
-  background: rgba(17, 24, 39, .6);
-  border-bottom: 1px solid var(--borde);
+  display: flex;
+  flex-direction: column;
+  gap: .2rem;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  overflow: visible;
 }
 .pestana {
-  background: transparent; border: 1px solid transparent; border-bottom: none;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
   color: var(--texto-suave);
-  padding: .65rem 1.05rem;
-  border-radius: 9px 9px 0 0;
-  font: inherit; font-size: .86rem; font-weight: 700;
-  cursor: pointer; white-space: nowrap;
+  padding: .68rem .75rem;
+  border-radius: 9px;
+  font: inherit; font-size: .84rem; font-weight: 700;
+  cursor: pointer;
+  white-space: normal;
   transition: all .15s ease;
+}
+.pestana-icono {
+  flex: 0 0 1.4rem;
+  text-align: center;
+  font-size: 1rem;
+  color: var(--violeta);
 }
 .pestana:hover { color: var(--texto); background: rgba(255, 255, 255, .04); }
 .pestana.activa {
   color: var(--acento);
-  background: var(--fondo);
-  border-color: var(--borde);
-  position: relative;
+  background: rgba(139, 124, 246, .14);
+  border-color: rgba(139, 124, 246, .42);
 }
-.pestana.activa::after {
-  content: ''; position: absolute; bottom: -1px; left: 0; right: 0;
-  height: 2px; background: var(--acento);
+.pestana.activa::before {
+  content: '';
+  position: absolute;
+  left: -1px; top: 18%; bottom: 18%;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--acento);
 }
 
 /* ------------------------------- layout ---------------------------------- */
@@ -458,10 +512,30 @@ input[type="number"] { text-align: right; }
 
 /* ------------------------------- responsive ------------------------------ */
 
-@media (max-width: 720px) {
+@media (max-width: 980px) {
+  :root { --sidebar: 232px; }
+  .barra-lateral { padding: 1rem .6rem; }
+  .pestana { padding: .6rem .55rem; font-size: .78rem; gap: .5rem; }
+  .barra-lateral .marca-icono { width: 38px; height: 38px; font-size: 1.3rem; }
+  .barra-lateral .marca h1 { font-size: 1rem; }
+  .barra-lateral-pie { display: none; }
   .cabecera, .contenedor { padding-left: 1rem; padding-right: 1rem; }
-  .pestanas { padding-left: 1rem; }
-  .marca p { display: none; }
+}
+
+@media (max-width: 620px) {
+  :root { --sidebar: 62px; }
+  .barra-lateral { padding: .8rem .35rem; align-items: center; }
+  .barra-lateral .marca { padding: 0; }
+  .barra-lateral .marca h1,
+  .barra-lateral .marca p { display: none; }
+  .pestana { justify-content: center; padding: .72rem .3rem; }
+  .pestana > span:not(.pestana-icono) { display: none; }
+  .pestana-icono { flex-basis: auto; font-size: 1.15rem; }
+  .cabecera-acciones { gap: .35rem; }
+  .cabecera-acciones .boton { padding: .32rem .45rem; font-size: .72rem; }
+}
+
+@media (max-width: 720px) {
   .rejilla-2 { grid-template-columns: 1fr; }
   .campo-ancho { flex: 1 1 100%; }
 }

@@ -15,34 +15,42 @@
   <datalist id="lista-articulos"></datalist>
   <datalist id="lista-clientes"></datalist>
 
-  <!-- ====================== CABECERA ====================== -->
-  <header class="cabecera">
+  <!-- ====================== MENÚ LATERAL ====================== -->
+  <aside class="barra-lateral">
     <div class="marca">
       <div class="marca-icono">◈</div>
       <div>
         <h1>PrintLab <span>3D</span> <em>v2</em></h1>
-        <p>Costos, cotizaciones, combos y pedidos · PostgreSQL en Supabase · Uruguay</p>
+        <p>Costos, cotizaciones y pedidos · Uruguay</p>
       </div>
     </div>
-    <div class="cabecera-acciones">
-      <span id="estado-bd" class="estado-bd estado-cargando">⏳ Conectando…</span>
-      <span id="usuario-actual" class="usuario-actual"></span>
-      <button class="boton boton-suave boton-pequeno" data-action="sincronizar">↻ Sincronizar</button>
-      <button class="boton boton-suave boton-pequeno" data-action="cerrar-sesion">⇥ Salir</button>
-    </div>
-  </header>
 
-  <!-- ====================== PESTAÑAS ====================== -->
-  <nav class="pestanas" aria-label="Módulos">
-    <button class="pestana activa" data-tab="catalogo">▦ Catálogo y costos</button>
-    <button class="pestana" data-tab="cotizador">∑ Cotizador dinámico</button>
-    <button class="pestana" data-tab="combos">◈ Armador de combos</button>
-    <button class="pestana" data-tab="pedidos">◉ Clientes y pedidos</button>
-    <button class="pestana" data-tab="mediciones">⌁ Mediciones del slicer</button>
-    <button class="pestana" data-tab="parametros">⚙ Parámetros base</button>
-  </nav>
+    <nav class="pestanas" aria-label="Módulos">
+      <button class="pestana activa" data-tab="catalogo"><span class="pestana-icono">▦</span><span>Catálogo y costos</span></button>
+      <button class="pestana" data-tab="cotizador"><span class="pestana-icono">∑</span><span>Cotizador dinámico</span></button>
+      <button class="pestana" data-tab="combos"><span class="pestana-icono">◈</span><span>Armador de combos</span></button>
+      <button class="pestana" data-tab="clientes"><span class="pestana-icono">♙</span><span>Clientes</span></button>
+      <button class="pestana" data-tab="pedidos"><span class="pestana-icono">◉</span><span>Pedidos</span></button>
+      <button class="pestana" data-tab="mediciones"><span class="pestana-icono">⌁</span><span>Mediciones del slicer</span></button>
+      <button class="pestana" data-tab="filamentos"><span class="pestana-icono">⬢</span><span>Inventario de filamento</span></button>
+      <button class="pestana" data-tab="parametros"><span class="pestana-icono">⚙</span><span>Parámetros base</span></button>
+    </nav>
 
-  <main class="contenedor">
+    <div class="barra-lateral-pie">PostgreSQL · Supabase · IVA 22 %</div>
+  </aside>
+
+  <!-- ====================== CONTENIDO ====================== -->
+  <div class="contenido">
+    <header class="cabecera">
+      <div class="cabecera-acciones">
+        <span id="estado-bd" class="estado-bd estado-cargando">⏳ Conectando…</span>
+        <span id="usuario-actual" class="usuario-actual"></span>
+        <button class="boton boton-suave boton-pequeno" data-action="sincronizar">↻ Sincronizar</button>
+        <button class="boton boton-suave boton-pequeno" data-action="cerrar-sesion">⇥ Salir</button>
+      </div>
+    </header>
+
+    <main class="contenedor">
 
     <!-- =================================================================
          MÓDULO 1 — CATÁLOGO Y COSTOS
@@ -281,7 +289,47 @@
     </section>
 
     <!-- =================================================================
-         MÓDULO 4 — CLIENTES Y PEDIDOS
+         MÓDULO 4 — CLIENTES
+         ================================================================= -->
+    <section id="tab-clientes" class="panel">
+      <div class="tarjeta">
+        <div class="tarjeta-cabecera">
+          <div>
+            <h2 id="form-cliente-titulo">Nuevo cliente</h2>
+            <p>Gestioná la ficha y los datos fiscales. Después lo elegís al crear un pedido.</p>
+          </div>
+        </div>
+        <form id="form-cliente" class="fila-formulario">
+          <div class="campo campo-ancho"><label>Nombre *</label>
+            <input type="text" id="cli-nombre" placeholder="Ej: María Fernández" required></div>
+          <div class="campo"><label>RUT</label>
+            <input type="text" id="cli-rut" placeholder="1.234.567-8"></div>
+          <div class="campo"><label>Razón social</label>
+            <input type="text" id="cli-razon" placeholder="Nombre comercial o legal"></div>
+          <div class="campo"><label>Teléfono</label>
+            <input type="text" id="cli-telefono" placeholder="09x xxx xxx"></div>
+          <div class="campo"><label>Email</label>
+            <input type="email" id="cli-email" placeholder="cliente@ejemplo.com"></div>
+          <div class="campo"><label>Dirección</label>
+            <input type="text" id="cli-direccion" placeholder="Calle y número"></div>
+          <div class="campo"><label>Notas</label>
+            <input type="text" id="cli-notas" placeholder="Observaciones"></div>
+          <button type="submit" class="boton boton-primario">＋ Guardar cliente</button>
+        </form>
+        <div class="tabla-envoltorio">
+          <table class="tabla">
+            <thead>
+              <tr><th>Nombre</th><th>RUT</th><th>Teléfono</th><th>Email</th>
+                  <th class="num">Pedidos</th><th class="centrado">—</th></tr>
+            </thead>
+            <tbody id="body-clientes"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- =================================================================
+         MÓDULO 5 — PEDIDOS
          ================================================================= -->
     <section id="tab-pedidos" class="panel">
       <div class="rejilla-kpi">
@@ -294,7 +342,7 @@
         <div class="tarjeta-cabecera">
           <div>
             <h2>Nuevo pedido de cliente</h2>
-            <p>Combiná artículos del catálogo y combos guardados en un mismo pedido.</p>
+            <p>Combiná artículos y combos en un mismo pedido. Los clientes se gestionan en el módulo <strong>Clientes</strong>.</p>
           </div>
         </div>
         <form id="form-pedido">
@@ -356,42 +404,7 @@
       </div>
 
       <div class="tarjeta">
-        <div class="tarjeta-cabecera">
-          <div>
-            <h2 id="form-cliente-titulo">Nuevo cliente</h2>
-            <p>El nombre se usa en el pedido; el RUT y la razón social van en la factura.</p>
-          </div>
-        </div>
-        <form id="form-cliente" class="fila-formulario">
-          <div class="campo campo-ancho"><label>Nombre *</label>
-            <input type="text" id="cli-nombre" placeholder="Ej: María Fernández" required></div>
-          <div class="campo"><label>RUT</label>
-            <input type="text" id="cli-rut" placeholder="1.234.567-8"></div>
-          <div class="campo"><label>Razón social</label>
-            <input type="text" id="cli-razon" placeholder="Nombre comercial o legal"></div>
-          <div class="campo"><label>Teléfono</label>
-            <input type="text" id="cli-telefono" placeholder="09x xxx xxx"></div>
-          <div class="campo"><label>Email</label>
-            <input type="email" id="cli-email" placeholder="cliente@ejemplo.com"></div>
-          <div class="campo"><label>Dirección</label>
-            <input type="text" id="cli-direccion" placeholder="Calle y número"></div>
-          <div class="campo"><label>Notas</label>
-            <input type="text" id="cli-notas" placeholder="Observaciones"></div>
-          <button type="submit" class="boton boton-primario">＋ Guardar cliente</button>
-        </form>
-        <div class="tabla-envoltorio">
-          <table class="tabla">
-            <thead>
-              <tr><th>Nombre</th><th>RUT</th><th>Teléfono</th><th>Email</th>
-                  <th class="num">Pedidos</th><th class="centrado">—</th></tr>
-            </thead>
-            <tbody id="body-clientes"></tbody>
-          </table>
-        </div>
-      </div>
-
-      <div class="tarjeta">
-        <div class="tarjeta-cabecera"><h2>Cartera de clientes y pedidos</h2></div>
+        <div class="tarjeta-cabecera"><h2>Cartera de pedidos</h2></div>
         <div class="tabla-envoltorio">
           <table class="tabla">
             <thead>
@@ -407,7 +420,7 @@
     </section>
 
     <!-- =================================================================
-         MÓDULO 5 — MEDICIONES REALES
+         MÓDULO 6 — MEDICIONES REALES
          ================================================================= -->
     <section id="tab-mediciones" class="panel">
       <div class="tarjeta">
@@ -455,11 +468,17 @@
         </div>
       </div>
 
+    </section>
+
+    <!-- =================================================================
+         MÓDULO 7 — INVENTARIO DE FILAMENTO
+         ================================================================= -->
+    <section id="tab-filamentos" class="panel">
       <div class="tarjeta">
         <div class="tarjeta-cabecera">
           <div>
-            <h2>Inventario de filamento</h2>
-            <p>Las mediciones nuevas descuentan el consumo del filamento elegido. Los kg se registran en el libro de movimientos.</p>
+            <h2>Bobinas de filamento</h2>
+            <p>Al guardar una medición podés elegir una bobina: el consumo se descuenta acá y queda en el libro de movimientos.</p>
           </div>
         </div>
         <form id="form-filamento" class="fila-formulario">
@@ -509,7 +528,7 @@
     </section>
 
     <!-- =================================================================
-         MÓDULO 6 — PARÁMETROS BASE
+         MÓDULO 8 — PARÁMETROS BASE
          ================================================================= -->
     <section id="tab-parametros" class="panel">
       <div class="tarjeta">
@@ -544,7 +563,8 @@
         </div>
       </div>
     </section>
-  </main>
+    </main>
+  </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
