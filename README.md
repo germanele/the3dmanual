@@ -10,11 +10,13 @@ Conserva la lógica y el propósito del original:
 - **Armador de combos** por presupuesto (3 estrategias + armado manual).
 - **Clientes** con ficha, datos fiscales y cantidad de pedidos.
 - **Pedidos** multi-artículo / multi-combo con estados y KPIs.
+- **Panel de capacidad** con horas en curso, ocupación de la impresora,
+  artículos más fabricados y valor del stock.
 - **Mediciones reales del slicer** (BambuStudio) con tiempos `hh:mm`.
 - **Inventario de filamento** con bobinas, stock, alertas y movimientos.
 - **Parámetros base** editables que recalculan toda la aplicación.
 
-La interfaz tiene **8 módulos/pestañas**, separados para que cada área tenga su
+La interfaz tiene **9 módulos/pestañas**, separados para que cada área tenga su
 propio espacio. `Mediciones` sigue teniendo el selector de filamento para
 descontar consumo; el alta y el libro de movimientos viven en `Inventario de
 filamento`.
@@ -38,12 +40,30 @@ filamento`.
   y costo por kg, más sus **últimos movimientos**. Al guardar una medición nueva
   podés elegir una bobina: el consumo (gramos / 1000) se descuenta en la misma
   transacción y queda registrado en el libro de entradas, consumos y ajustes.
+- **Importador de Bambu Studio**: en *Mediciones del slicer* podés leer un
+  `.gcode.3mf` ya cortado. Trae gramos, tiempo de impresión, material, color,
+  impresora y versión de BambuStudio; sugiere una bobina existente por
+  material/color, pero **siempre la confirmás vos** antes de cargar el
+  formulario. No crea bobinas nuevas ni escribe en la BD hasta que apretás
+  *Guardar medición*.
 - **Borrados confirmados**: reemplazamos los `confirm()` del navegador por un
   modal propio. Al borrar un pedido podés elegir **anularlo** (marca *Cancelado*
   y conserva el histórico) o **eliminarlo** definitivamente.
-- **Menú lateral fijo**: los 8 módulos viven en una barra a la izquierda que
+- **Menú lateral fijo**: los 9 módulos viven en una barra a la izquierda que
   permanece visible al desplazarte por las tablas largas. En pantallas chicas se
   reduce a iconos para no robar espacio.
+- **Panel de capacidad**: resume las horas de impresión de los pedidos
+  pendientes, en producción y listos para entrega; las compara con la capacidad
+  semanal que vos definís, lista el **top 5** de artículos más fabricados y
+  calcula el valor del stock (`kg × costo/kg`). Las horas se estiman desde las
+  mediciones reales del slicer (se expanden los combos) y se muestran en `hh:mm`.
+  La capacidad es una preferencia local del navegador: no modifica la BD.
+- **Búsqueda, filtros y orden**: Clientes, Pedidos y Movimientos tienen buscador,
+  contador de resultados y columnas ordenables. Pedidos además filtra por estado.
+  El filtrado es local e inmediato, sin viajes a Supabase.
+- **Alerta global de stock**: la cabecera muestra `⚠️ N bobinas bajas` cuando
+  alguna bobina está en o por debajo de su nivel de alerta; al hacer clic te
+  lleva directo al módulo *Inventario de filamento*.
 
 > Orden de migraciones sobre una BD ya existente:
 > `migration_factura.sql` → `auth_rls.sql` → `mejoras.sql`.
@@ -139,6 +159,34 @@ y que tu email esté en `usuarios_autorizados`.
 
 ---
 
+## Importar mediciones desde Bambu Studio
+
+1. En Bambu Studio, prepará la plataforma y apretá **Slice plate** (el archivo
+   debe estar cortado; si no, el importador avisa).
+2. Exportá la plataforma como **`.gcode.3mf`** (*File → Export → Export as 3MF*
+   con la opción de G-code incluido, o el `.3mf` que guarda el proyecto ya
+   cortado).
+3. Entrá a **Mediciones del slicer → Importar desde Bambu Studio**, elegí el
+   archivo y apretá **⌁ Leer archivo**.
+4. Revisá la vista previa: podés elegir entre las plataformas del proyecto y
+   ajustar la cantidad de piezas del lote (si hay una sola plataforma, se cuenta
+   sola desde el modelo 3MF). Gramos y tiempo son **del lote completo**, no por
+   pieza.
+5. Confirmá o cambiá la bobina sugerida (o dejá *Sin descontar stock*) y apretá
+   **✓ Confirmar y cargar en el formulario**.
+6. El formulario queda completo; revisá artículo, fecha y factor y apretá
+   **💾 Guardar medición**. Recién ahí se escribe en Supabase y se descuenta el
+   filamento.
+
+Detalles técnicos: se lee `Metadata/slice_info.config` dentro del ZIP 3MF
+(`prediction` en segundos → `hh:mm`, `weight`/`used_g` en gramos). La biblioteca
+**JSZip** se carga desde CDN y todo el parseo ocurre en el navegador: no hay
+backend, credenciales ni migraciones nuevas. Para archivos multiláser/multimaterial
+se sugiere la bobina que más gramos consumió y se muestran todos los materiales
+del archivo; la elección final siempre es tuya.
+
+---
+
 ## Publicar en Cloudflare Pages (gratis)
 
 1. **Subí los archivos a un repo de GitHub** (aunque antes usaras Pages u otro
@@ -181,7 +229,7 @@ gestion_impresion_3d_v2/
 ├── engine.js             ← motor de cálculo (fórmulas, hh:mm, IVA, combos, equilibrio)
 ├── db.js                 ← capa de persistencia y adaptadores al modelo de vista
 ├── app.js                ← controlador: estado central, render por módulo, eventos
-├── index.html            ← interfaz de los 8 módulos
+├── index.html            ← interfaz de los 9 módulos
 └── styles.css            ← diseño responsive
 ```
 

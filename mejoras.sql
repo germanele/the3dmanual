@@ -71,10 +71,21 @@ ALTER TABLE public.pedidos
     ADD COLUMN IF NOT EXISTS numero_factura TEXT,
     ADD COLUMN IF NOT EXISTS fecha_factura  DATE;
 
+-- Un UNIQUE crea también un índice con el mismo nombre. Se verifican ambos:
+-- si ya existe la constraint O el índice, no se agrega nada (42P07 = duplicate_table).
 DO $$
 BEGIN
-    ALTER TABLE public.pedidos ADD CONSTRAINT uq_numero_factura UNIQUE (numero_factura);
-EXCEPTION WHEN duplicate_object THEN NULL;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'uq_numero_factura'
+          AND conrelid = 'public.pedidos'::regclass
+    ) AND NOT EXISTS (
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relname = 'uq_numero_factura'
+    ) THEN
+        ALTER TABLE public.pedidos ADD CONSTRAINT uq_numero_factura UNIQUE (numero_factura);
+    END IF;
 END $$;
 
 -- Convierte cada nombre de cliente existente en una fila de la tabla nueva.

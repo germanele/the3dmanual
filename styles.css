@@ -510,6 +510,142 @@ input[type="number"] { text-align: right; }
 .tarjeta-login button:disabled { opacity: .6; cursor: wait; }
 .login-pie { margin-top: 1.1rem; font-size: .72rem; color: var(--texto-suave); }
 
+/* --------------------------- alerta de stock ----------------------------- */
+
+.alerta-stock {
+  display: inline-flex; align-items: center; gap: .3rem;
+  padding: .35rem .7rem;
+  border-radius: 999px;
+  border: 1px solid rgba(245, 182, 66, .5);
+  background: rgba(245, 182, 66, .14);
+  color: var(--alerta);
+  font: inherit; font-size: .76rem; font-weight: 800;
+  cursor: pointer; white-space: nowrap;
+  transition: background .15s ease, transform .12s ease;
+}
+.alerta-stock:hover { background: rgba(245, 182, 66, .25); transform: translateY(-1px); }
+.alerta-stock[hidden] { display: none; }
+
+/* -------------------------- filtros y orden ------------------------------ */
+
+.barra-filtros {
+  display: flex; align-items: center; gap: .6rem;
+  flex-wrap: wrap;
+  padding: .8rem 1rem 0;
+}
+.campo-busqueda {
+  display: flex; align-items: center; gap: .45rem;
+  flex: 1 1 260px; max-width: 460px;
+  padding: .4rem .7rem;
+  background: var(--campo);
+  border: 1px solid var(--borde);
+  border-radius: 8px;
+  color: var(--texto-suave);
+}
+.campo-busqueda:focus-within { border-color: var(--acento); }
+.campo-busqueda span { font-size: 1rem; line-height: 1; }
+.campo-busqueda input {
+  flex: 1; min-width: 0;
+  background: transparent; border: 0; outline: none;
+  color: var(--texto); font: inherit; font-size: .82rem;
+}
+.campo-busqueda input::placeholder { color: var(--texto-suave); opacity: .75; }
+.filtro-estado {
+  padding: .45rem .6rem;
+  background: var(--campo); border: 1px solid var(--borde);
+  border-radius: 8px; color: var(--texto); font: inherit; font-size: .8rem;
+}
+.contador-filtro {
+  font-size: .75rem; color: var(--texto-suave); white-space: nowrap;
+}
+.orden {
+  display: inline-flex; align-items: center; gap: .3rem;
+  padding: 0; background: transparent; border: 0;
+  color: inherit; font: inherit; font-weight: inherit;
+  cursor: pointer; white-space: nowrap;
+}
+.orden:hover { color: var(--acento); }
+.flecha-orden { font-size: .7rem; color: var(--texto-suave); min-width: .8rem; }
+.orden.activo { color: var(--acento); }
+.orden.activo .flecha-orden { color: var(--acento); }
+
+/* ------------------------ panel de capacidad ---------------------------- */
+
+.entrada-capacidad {
+  width: 4.5rem;
+  padding: .1rem .35rem;
+  background: var(--campo);
+  border: 1px solid var(--borde);
+  border-radius: 7px;
+  color: var(--texto);
+  font: inherit; font-size: 1.35rem; font-weight: 800;
+  text-align: right;
+}
+.entrada-capacidad:focus { outline: none; border-color: var(--acento); }
+.barra-progreso {
+  width: 100%; height: 7px; margin-top: .5rem;
+  background: rgba(255, 255, 255, .07);
+  border-radius: 999px; overflow: hidden;
+}
+.relleno-progreso {
+  height: 100%; width: 0;
+  border-radius: 999px;
+  background: var(--verde);
+  transition: width .3s ease, background .3s ease;
+}
+.relleno-progreso.media { background: var(--alerta); }
+.relleno-progreso.alta { background: var(--rojo); }
+
+/* --------------------- importador de 3MF (Bambu) ------------------------ */
+
+.campo-archivo {
+  padding: .55rem .7rem !important;
+  font-size: .8rem !important;
+}
+.campo-archivo::file-selector-button {
+  margin-right: .7rem;
+  padding: .35rem .65rem;
+  background: rgba(139, 124, 246, .16);
+  border: 1px solid rgba(139, 124, 246, .45);
+  border-radius: 7px;
+  color: #c4bbff;
+  font: inherit; font-weight: 700;
+  cursor: pointer;
+}
+.importar-resultado {
+  margin: 1rem 1rem 0;
+  padding: 1rem;
+  background: var(--superficie-2);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+}
+.importar-resultado[hidden] { display: none; }
+.importar-cabecera {
+  display: flex; align-items: center; gap: .7rem; flex-wrap: wrap;
+  padding-bottom: .8rem;
+  border-bottom: 1px solid var(--borde-suave);
+}
+.importar-cabecera strong { font-size: 1rem; }
+.rejilla-importar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: .8rem;
+  margin: .9rem 0;
+}
+.rejilla-importar .campo label { font-size: .72rem; }
+.dato-importado { font-size: 1rem; color: var(--acento); }
+.sugerencia-filamento {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap;
+  padding: .8rem;
+  background: rgba(49, 209, 232, .06);
+  border: 1px solid rgba(49, 209, 232, .28);
+  border-radius: 9px;
+}
+.sugerencia-filamento p { margin: .15rem 0 0; font-size: .78rem; }
+.selector-sugerencia { min-width: 230px; flex: 0 1 300px; }
+.importar-acciones { margin-top: .9rem; }
+
 /* ------------------------------- responsive ------------------------------ */
 
 @media (max-width: 980px) {

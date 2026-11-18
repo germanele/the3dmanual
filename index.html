@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="styles.css">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 </head>
 <body>
   <datalist id="lista-articulos"></datalist>
@@ -31,6 +32,7 @@
       <button class="pestana" data-tab="combos"><span class="pestana-icono">◈</span><span>Armador de combos</span></button>
       <button class="pestana" data-tab="clientes"><span class="pestana-icono">♙</span><span>Clientes</span></button>
       <button class="pestana" data-tab="pedidos"><span class="pestana-icono">◉</span><span>Pedidos</span></button>
+      <button class="pestana" data-tab="capacidad"><span class="pestana-icono">◔</span><span>Panel de capacidad</span></button>
       <button class="pestana" data-tab="mediciones"><span class="pestana-icono">⌁</span><span>Mediciones del slicer</span></button>
       <button class="pestana" data-tab="filamentos"><span class="pestana-icono">⬢</span><span>Inventario de filamento</span></button>
       <button class="pestana" data-tab="parametros"><span class="pestana-icono">⚙</span><span>Parámetros base</span></button>
@@ -43,6 +45,8 @@
   <div class="contenido">
     <header class="cabecera">
       <div class="cabecera-acciones">
+        <button type="button" id="alerta-stock" class="alerta-stock" data-action="ir-inventario" hidden
+                title="Ir al inventario de filamento">⚠️ <span id="alerta-stock-num">0</span> bobinas bajas</button>
         <span id="estado-bd" class="estado-bd estado-cargando">⏳ Conectando…</span>
         <span id="usuario-actual" class="usuario-actual"></span>
         <button class="boton boton-suave boton-pequeno" data-action="sincronizar">↻ Sincronizar</button>
@@ -316,11 +320,26 @@
             <input type="text" id="cli-notas" placeholder="Observaciones"></div>
           <button type="submit" class="boton boton-primario">＋ Guardar cliente</button>
         </form>
+        <div class="barra-filtros">
+          <label class="campo-busqueda">
+            <span>⌕</span>
+            <input type="search" id="filtro-clientes" data-filtro-texto="clientes"
+                   placeholder="Buscar por nombre, RUT, razón social, teléfono o email…" autocomplete="off">
+          </label>
+          <span id="conteo-clientes" class="contador-filtro"></span>
+          <button type="button" class="boton boton-contorno boton-pequeno"
+                  data-action="limpiar-filtro" data-tabla="clientes">Limpiar</button>
+        </div>
         <div class="tabla-envoltorio">
           <table class="tabla">
             <thead>
-              <tr><th>Nombre</th><th>RUT</th><th>Teléfono</th><th>Email</th>
-                  <th class="num">Pedidos</th><th class="centrado">—</th></tr>
+              <tr>
+                <th><button type="button" class="orden" data-tabla="clientes" data-orden="nombre">Nombre <span class="flecha-orden"></span></button></th>
+                <th><button type="button" class="orden" data-tabla="clientes" data-orden="rut">RUT <span class="flecha-orden"></span></button></th>
+                <th>Teléfono</th><th>Email</th>
+                <th class="num"><button type="button" class="orden" data-tabla="clientes" data-orden="pedidos">Pedidos <span class="flecha-orden"></span></button></th>
+                <th class="centrado">—</th>
+              </tr>
             </thead>
             <tbody id="body-clientes"></tbody>
           </table>
@@ -405,13 +424,35 @@
 
       <div class="tarjeta">
         <div class="tarjeta-cabecera"><h2>Cartera de pedidos</h2></div>
+        <div class="barra-filtros">
+          <label class="campo-busqueda">
+            <span>⌕</span>
+            <input type="search" id="filtro-pedidos" data-filtro-texto="pedidos"
+                   placeholder="Buscar por código, cliente, RUT, estado o artículo…" autocomplete="off">
+          </label>
+          <select id="filtro-pedidos-estado" data-filtro-estado="pedidos" class="filtro-estado" aria-label="Filtrar por estado">
+            <option value="">Todos los estados</option>
+            <option>Pendiente</option><option>En Producción</option>
+            <option>Listo para Entrega</option><option>Entregado</option><option>Cancelado</option>
+          </select>
+          <span id="conteo-pedidos" class="contador-filtro"></span>
+          <button type="button" class="boton boton-contorno boton-pequeno"
+                  data-action="limpiar-filtro" data-tabla="pedidos">Limpiar</button>
+        </div>
         <div class="tabla-envoltorio">
           <table class="tabla">
             <thead>
-              <tr><th>Código</th><th>Fecha</th><th>Cliente</th><th>Ítems</th>
-                  <th class="centrado">Factura</th><th>Nº Factura</th>
-                  <th class="num">Subtotal</th><th class="num">Total</th>
-                  <th>Estado</th><th class="centrado">—</th></tr>
+              <tr>
+                <th><button type="button" class="orden" data-tabla="pedidos" data-orden="codigo">Código <span class="flecha-orden"></span></button></th>
+                <th><button type="button" class="orden" data-tabla="pedidos" data-orden="fecha">Fecha <span class="flecha-orden"></span></button></th>
+                <th><button type="button" class="orden" data-tabla="pedidos" data-orden="cliente">Cliente <span class="flecha-orden"></span></button></th>
+                <th>Ítems</th>
+                <th class="centrado">Factura</th><th>Nº Factura</th>
+                <th class="num"><button type="button" class="orden" data-tabla="pedidos" data-orden="subtotal">Subtotal <span class="flecha-orden"></span></button></th>
+                <th class="num"><button type="button" class="orden" data-tabla="pedidos" data-orden="total">Total <span class="flecha-orden"></span></button></th>
+                <th><button type="button" class="orden" data-tabla="pedidos" data-orden="estado">Estado <span class="flecha-orden"></span></button></th>
+                <th class="centrado">—</th>
+              </tr>
             </thead>
             <tbody id="body-pedidos"></tbody>
           </table>
@@ -420,7 +461,76 @@
     </section>
 
     <!-- =================================================================
-         MÓDULO 6 — MEDICIONES REALES
+         MÓDULO 6 — PANEL DE CAPACIDAD
+         ================================================================= -->
+    <section id="tab-capacidad" class="panel">
+      <div class="rejilla-kpi">
+        <div class="tarjeta-kpi alerta">
+          <span class="kpi-etiqueta">Horas en curso</span>
+          <strong id="cap-horas-curso">00:00</strong>
+          <small>Pendientes + en producción + listos</small>
+        </div>
+        <div class="tarjeta-kpi">
+          <span class="kpi-etiqueta">Capacidad de impresora</span>
+          <strong>
+            <input type="number" id="cap-horas-disponibles" class="entrada-capacidad"
+                   min="1" step="1" value="40" title="Horas de impresión disponibles por semana">
+            <span class="texto-suave">h/sem</span>
+          </strong>
+          <small>Editable — se guarda en este navegador</small>
+        </div>
+        <div class="tarjeta-kpi verde">
+          <span class="kpi-etiqueta">Ocupación estimada</span>
+          <strong id="cap-porcentaje">0 %</strong>
+          <div class="barra-progreso"><div id="cap-barra" class="relleno-progreso"></div></div>
+          <small id="cap-estado">Sin pedidos en curso</small>
+        </div>
+        <div class="tarjeta-kpi">
+          <span class="kpi-etiqueta">Valor del stock</span>
+          <strong id="cap-valor-stock">$ 0,00</strong>
+          <small>Suma de kg × costo por kg</small>
+        </div>
+      </div>
+
+      <div class="tarjeta">
+        <div class="tarjeta-cabecera">
+          <div>
+            <h2>Top 5 — artículos más fabricados</h2>
+            <p>Se cuentan los ítems de todos los pedidos, incluidos los que vienen dentro de un combo. Se excluyen los cancelados.</p>
+          </div>
+        </div>
+        <div class="tabla-envoltorio">
+          <table class="tabla">
+            <thead>
+              <tr><th class="num">#</th><th>Artículo</th><th class="num">Unidades</th>
+                  <th class="num">Horas de impresión</th><th class="num">Pedidos</th></tr>
+            </thead>
+            <tbody id="cap-top-articulos"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tarjeta">
+        <div class="tarjeta-cabecera">
+          <div>
+            <h2>Detalle de horas por pedido en curso</h2>
+            <p>Solo tiempo de impresión estimado a partir de las mediciones del slicer; no incluye preparación ni postprocesado.</p>
+          </div>
+        </div>
+        <div class="tabla-envoltorio">
+          <table class="tabla">
+            <thead>
+              <tr><th>Código</th><th>Cliente</th><th>Estado</th>
+                  <th class="num">Piezas</th><th class="num">Horas</th><th class="num">% del total</th></tr>
+            </thead>
+            <tbody id="cap-detalle-pedidos"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- =================================================================
+         MÓDULO 7 — MEDICIONES REALES
          ================================================================= -->
     <section id="tab-mediciones" class="panel">
       <div class="tarjeta">
@@ -453,6 +563,66 @@
         </form>
       </div>
 
+      <div class="tarjeta" id="tarjeta-importar">
+        <div class="tarjeta-cabecera">
+          <div>
+            <h2>Importar desde Bambu Studio</h2>
+            <p>Exportá la plataforma <strong>ya cortada</strong> como <code>.gcode.3mf</code>: traemos gramos, tiempo de impresión, material y color. Vos confirmás la bobina.</p>
+          </div>
+        </div>
+        <div class="fila-formulario">
+          <div class="campo campo-ancho">
+            <label>Archivo 3MF cortado</label>
+            <input type="file" id="imp-archivo" class="campo-archivo"
+                   accept=".3mf,.gcode.3mf,application/octet-stream">
+          </div>
+          <button type="button" class="boton boton-suave" data-action="importar-3mf">⌁ Leer archivo</button>
+        </div>
+
+        <div id="imp-resultado" class="importar-resultado" hidden>
+          <div class="importar-cabecera">
+            <strong id="imp-nombre">—</strong>
+            <span id="imp-origen" class="etiqueta etiqueta-azul">—</span>
+          </div>
+          <div class="rejilla-importar">
+            <div class="campo">
+              <label>Plataforma</label>
+              <select id="imp-placa"></select>
+            </div>
+            <div class="campo">
+              <label>Piezas en la plataforma</label>
+              <input type="number" id="imp-cantidad" min="1" step="1" value="1">
+              <small class="texto-suave">Gramos y tiempo son del lote completo.</small>
+            </div>
+            <div class="campo">
+              <label>Gramos del lote</label>
+              <strong id="imp-gramos" class="dato-importado">—</strong>
+            </div>
+            <div class="campo">
+              <label>Tiempo de impresión</label>
+              <strong id="imp-tiempo" class="dato-importado">—</strong>
+            </div>
+            <div class="campo campo-ancho">
+              <label>Material / color del archivo</label>
+              <strong id="imp-material" class="dato-importado">—</strong>
+            </div>
+          </div>
+          <div class="sugerencia-filamento">
+            <div>
+              <strong>Bobina a descontar</strong>
+              <p id="imp-sugerencia-texto" class="texto-suave">—</p>
+            </div>
+            <select id="imp-filamento" class="selector-sugerencia"></select>
+          </div>
+          <div class="grupo-botones importar-acciones">
+            <button type="button" class="boton boton-primario" data-action="confirmar-importacion">
+              ✓ Confirmar y cargar en el formulario
+            </button>
+            <button type="button" class="boton boton-contorno" data-action="cancelar-importacion">Cancelar</button>
+          </div>
+        </div>
+      </div>
+
       <div class="tarjeta">
         <div class="tarjeta-cabecera"><h2>Base de mediciones reales</h2></div>
         <div class="tabla-envoltorio">
@@ -471,7 +641,7 @@
     </section>
 
     <!-- =================================================================
-         MÓDULO 7 — INVENTARIO DE FILAMENTO
+         MÓDULO 8 — INVENTARIO DE FILAMENTO
          ================================================================= -->
     <section id="tab-filamentos" class="panel">
       <div class="tarjeta">
@@ -515,11 +685,26 @@
 
       <div class="tarjeta">
         <div class="tarjeta-cabecera"><h2>Últimos movimientos de filamento</h2></div>
+        <div class="barra-filtros">
+          <label class="campo-busqueda">
+            <span>⌕</span>
+            <input type="search" id="filtro-movimientos" data-filtro-texto="movimientos"
+                   placeholder="Buscar por filamento, tipo, motivo o fecha…" autocomplete="off">
+          </label>
+          <span id="conteo-movimientos" class="contador-filtro"></span>
+          <button type="button" class="boton boton-contorno boton-pequeno"
+                  data-action="limpiar-filtro" data-tabla="movimientos">Limpiar</button>
+        </div>
         <div class="tabla-envoltorio">
           <table class="tabla">
             <thead>
-              <tr><th>Fecha</th><th>Filamento</th><th>Tipo</th>
-                  <th class="num">Kg</th><th>Motivo</th></tr>
+              <tr>
+                <th><button type="button" class="orden" data-tabla="movimientos" data-orden="fecha">Fecha <span class="flecha-orden"></span></button></th>
+                <th><button type="button" class="orden" data-tabla="movimientos" data-orden="filamentoNombre">Filamento <span class="flecha-orden"></span></button></th>
+                <th><button type="button" class="orden" data-tabla="movimientos" data-orden="tipo">Tipo <span class="flecha-orden"></span></button></th>
+                <th class="num"><button type="button" class="orden" data-tabla="movimientos" data-orden="kg">Kg <span class="flecha-orden"></span></button></th>
+                <th>Motivo</th>
+              </tr>
             </thead>
             <tbody id="body-movimientos"></tbody>
           </table>
@@ -528,7 +713,7 @@
     </section>
 
     <!-- =================================================================
-         MÓDULO 8 — PARÁMETROS BASE
+         MÓDULO 9 — PARÁMETROS BASE
          ================================================================= -->
     <section id="tab-parametros" class="panel">
       <div class="tarjeta">

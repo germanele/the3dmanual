@@ -8,6 +8,20 @@
 
 'use strict';
 
+/* Preferencias locales: no se envían a Supabase, sólo viven en este navegador. */
+function leerPreferencia(clave, defecto) {
+  try {
+    const valor = localStorage.getItem(clave);
+    return valor === null ? defecto : (Number(valor) || defecto);
+  } catch {
+    return defecto;
+  }
+}
+
+function guardarPreferencia(clave, valor) {
+  try { localStorage.setItem(clave, String(valor)); } catch { /* navegador privado */ }
+}
+
 const estado = {
   datos: {
     parametros: [], articulos: [], mediciones: [], registro: [], combos: [], pedidos: [],
@@ -21,7 +35,14 @@ const estado = {
   grafico: null,
   ultimaCotizacion: null,
   clienteEditando: null,
-  confirmacion: null
+  confirmacion: null,
+  capacidadHoras: leerPreferencia('printlab.horasImpresora', 40),
+  importacion: null,
+  filtros: {
+    clientes: { texto: '', orden: 'nombre', dir: 1 },
+    pedidos: { texto: '', estado: '', orden: 'fecha', dir: -1 },
+    movimientos: { texto: '', orden: 'fecha', dir: -1 }
+  }
 };
 
 const ESTADOS_PEDIDO = ['Pendiente', 'En Producción', 'Listo para Entrega', 'Entregado', 'Cancelado'];
@@ -88,6 +109,265 @@ function idArticuloDesde(valor) {
   return porId ? porId.id : '';
 }
 
+/* ==================== filtros, búsqueda y orden ========================== */
+
+function textoBusqueda(valor) {
+  return String(valor ?? '').toLocaleLowerCase('es');
+}
+
+function aplicarFiltro(lista, filtro, campos) {
+  const q = textoBusqueda(filtro.texto).trim();
+  const filtrados = lista.filter(item => {
+    if (filtro.estado && item.estado !== filtro.estado) return false;
+    if (!q) return true;
+    return campos.some(campo => textoBusqueda(item[campo]).includes(q));
+  });
+
+  const { orden, dir } = filtro;
+  return filtrados.sort((a, b) => {
+    const va = a[orden], vb = b[orden];
+    const resultado = (typeof va === 'number' && typeof vb === 'number')
+      ? va - vb
+      : String(va ?? '').localeCompare(String(vb ?? ''), 'es',
+          { numeric: true, sensitivity: 'base' });
+    return resultado * dir;
+  });
+}
+
+function actualizarFlechas(tabla, filtro) {
+  document.querySelectorAll(`.orden[data-tabla="${tabla}"]`).forEach(boton => {
+    const activo = boton.dataset.orden === filtro.orden;
+    boton.classList.toggle('activo', activo);
+    boton.querySelector('.flecha-orden').textContent =
+      activo ? (filtro.dir === 1 ? '▲' : '▼') : '↕';
+  });
+}
+
+function actualizarConteo(id, visibles, totales, etiqueta) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const singular = {
+    clientes: 'cliente', pedidos: 'pedido', movimientos: 'movimiento'
+  }[etiqueta] || etiqueta;
+  const palabra = totales === 1 ? singular : etiqueta;
+  el.textContent = visibles === totales
+    ? `${totales} ${palabra}`
+    : `${visibles} de ${totales} ${palabra}`;
+}
+
+function redibujarTabla(tabla) {
+  const tablas = {
+    clientes: dibujarTablaClientes,
+    pedidos: dibujarTablaPedidos,
+    movimientos: dibujarTablaMovimientos
+  };
+  tablas[tabla]?.();
+}
+
+/** Cambia de módulo y vuelve arriba (lo usa el menú y el alerta de stock). */
+function activarPestana(nombre) {
+  const boton = document.querySelector(`.pestana[data-tab="${nombre}"]`);
+  if (!boton) return;
+  document.querySelectorAll('.pestana').forEach(b => b.classList.remove('activa'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('activa'));
+  boton.classList.add('activa');
+  document.getElementById(`tab-${nombre}`)?.classList.add('activa');
+  if (nombre === 'cotizador' && estado.grafico) estado.grafico.resize();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+/* ============== importación de 3MF cortado (Bambu Studio) ================ */
+
+const PALETA_COLORES = [
+  ['Negro', '#000000'], ['Blanco', '#FFFFFF'], ['Gris', '#808080'],
+  ['Rojo', '#FF0000'], ['Azul', '#0000FF'], ['Verde', '#008000'],
+  ['Amarillo', '#FFFF00'], ['Naranja', '#FFA500'], ['Morado', '#800080'],
+  ['Rosa', '#FF69B4'], ['Marrón', '#8B4513'], ['Cian', '#00FFFF'],
+  ['Plata', '#C0C0C0'], ['Oro', '#D4AF37'], ['Transparente', '#E6F4F1']
+];
+
+function sinAcentos(valor) {
+  return String(valor ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function rgbDeHex(hex) {
+  const limpio = String(hex || '').replace('#', '').trim();
+  if (!/^[0-9a-f]{6}$/i.test(limpio)) return null;
+  return [0, 2, 4].map(i => parseInt(limpio.slice(i, i + 2), 16));
+}
+
+function distanciaColor(hexA, hexB) {
+  const a = rgbDeHex(hexA), b = rgbDeHex(hexB);
+  if (!a || !b) return Infinity;
+  return Math.sqrt(a.reduce((suma, valor, i) => suma + (valor - b[i]) ** 2, 0));
+}
+
+function nombreColorCercano(hex) {
+  if (!rgbDeHex(hex)) return '';
+  let mejor = '', menor = Infinity;
+  for (const [nombre, referencia] of PALETA_COLORES) {
+    const distancia = distanciaColor(hex, referencia);
+    if (distancia < menor) { menor = distancia; mejor = nombre; }
+  }
+  return menor <= 120 ? mejor : '';
+}
+
+function atributoDe(bloque, nombre) {
+  const hallazgo = String(bloque).match(new RegExp(`${nombre}="([^"]*)"`));
+  return hallazgo ? hallazgo[1] : '';
+}
+
+function metaDe(bloque, clave) {
+  const hallazgo = String(bloque).match(
+    new RegExp(`<metadata\\s+key="${clave}"\\s+value="([^"]*)"`));
+  return hallazgo ? hallazgo[1] : '';
+}
+
+/** Extrae plataformas, tiempo (s), peso (g) y filamentos de slice_info.config. */
+function parsearSliceInfo(xml) {
+  const placas = [];
+  const bloques = String(xml).match(/<plate>[\s\S]*?<\/plate>/g) || [];
+  for (const bloque of bloques) {
+    const filamentos = [];
+    const expresion = /<filament\s+([^>]*)\/>/g;
+    let coincidencia;
+    while ((coincidencia = expresion.exec(bloque)) !== null) {
+      const atributos = coincidencia[1];
+      filamentos.push({
+        id: Number(atributoDe(atributos, 'id')) || 0,
+        tipo: atributoDe(atributos, 'type'),
+        color: atributoDe(atributos, 'color'),
+        gramos: Number(atributoDe(atributos, 'used_g')) || 0,
+        metros: Number(atributoDe(atributos, 'used_m')) || 0,
+        perfil: atributoDe(atributos, 'tray_info_idx')
+      });
+    }
+    placas.push({
+      index: Number(metaDe(bloque, 'index')) || placas.length + 1,
+      nombre: metaDe(bloque, 'plater_name'),
+      segundos: Number(metaDe(bloque, 'prediction')) || 0,
+      gramos: Number(metaDe(bloque, 'weight')) || 0,
+      filamentos
+    });
+  }
+  return placas;
+}
+
+function nombresPlacasDe3mf(xml) {
+  const mapa = {};
+  const expresion = /<plate>([\s\S]*?)<\/plate>/g;
+  let coincidencia;
+  while ((coincidencia = expresion.exec(String(xml || ''))) !== null) {
+    const id = (coincidencia[1].match(
+      /<metadata\s+key="plater_id"\s+value="(\d+)"/) || [])[1];
+    const nombre = (coincidencia[1].match(
+      /<metadata\s+key="plater_name"\s+value="([^"]*)"/) || [])[1] || '';
+    if (id) mapa[Number(id)] = nombre;
+  }
+  return mapa;
+}
+
+/** Bobina existente que mejor coincide con material + color del 3MF. */
+function sugerirFilamento(tipo, colorHex) {
+  const lista = estado.datos.filamentos || [];
+  if (!lista.length) return null;
+
+  const tipoBase = sinAcentos(textoBusqueda(String(tipo || '').split(/[-_\s]/)[0]));
+  const colorNormalizado = sinAcentos(textoBusqueda(nombreColorCercano(colorHex)));
+  const hexNormalizado = String(colorHex || '').toLowerCase();
+
+  const puntajes = lista.map(f => {
+    const material = sinAcentos(textoBusqueda(f.material));
+    const colorBobina = String(f.color || '').trim();
+    let puntos = 0;
+
+    if (tipoBase) {
+      if (material === tipoBase) puntos += 3;
+      else if (material && (material.includes(tipoBase) || tipoBase.includes(material))) puntos += 1;
+    }
+
+    if (colorBobina.startsWith('#')) {
+      if (colorBobina.toLowerCase() === hexNormalizado) puntos += 3;
+      else if (distanciaColor(colorBobina, colorHex) < 70) puntos += 2;
+    } else if (colorNormalizado && colorBobina) {
+      const cf = sinAcentos(textoBusqueda(colorBobina));
+      if (cf === colorNormalizado) puntos += 3;
+      else if (cf.includes(colorNormalizado) || colorNormalizado.includes(cf)) puntos += 2;
+    }
+
+    return { filamento: f, puntos, kg: Number(f.kg) || 0 };
+  }).sort((a, b) => b.puntos - a.puntos || b.kg - a.kg);
+
+  const umbral = (hexNormalizado || colorNormalizado) ? 4 : 3;
+  return puntajes[0]?.puntos >= umbral ? puntajes[0].filamento : null;
+}
+
+async function leerArchivo3MF(archivo) {
+  if (typeof JSZip === 'undefined') {
+    throw new Error('No se pudo cargar JSZip. Revisá la conexión y recargá con Ctrl+F5.');
+  }
+  if (!/\.3mf$/i.test(archivo.name)) {
+    throw new Error('El archivo debe ser .3mf o .gcode.3mf de Bambu Studio.');
+  }
+  if (archivo.size > 120 * 1024 * 1024) {
+    throw new Error('El archivo supera los 120 MB. Probá con una sola plataforma.');
+  }
+
+  const zip = await JSZip.loadAsync(archivo);
+  const nombres = Object.keys(zip.files);
+  const buscar = sufijo => nombres.find(n => n.toLowerCase().endsWith(sufijo));
+
+  const rutaSlice = buscar('slice_info.config');
+  if (!rutaSlice) {
+    throw new Error('El 3MF no está cortado. En Bambu Studio apretá «Slice plate» y exportá el .gcode.3mf.');
+  }
+
+  const sliceXML = await zip.files[rutaSlice].async('text');
+  const placas = parsearSliceInfo(sliceXML);
+  if (!placas.length) throw new Error('No se encontraron plataformas cortadas en el archivo.');
+
+  const rutaSettings = buscar('project_settings.config');
+  const rutaModelo = nombres.find(n => /^3d\/3dmodel\.model$/i.test(n));
+  const rutaPlacas = buscar('model_settings.config');
+
+  let settings = {};
+  if (rutaSettings) {
+    try { settings = JSON.parse(await zip.files[rutaSettings].async('text')); }
+    catch { settings = {}; }
+  }
+  const modeloXML = rutaModelo ? await zip.files[rutaModelo].async('text') : '';
+  const piezasModelo = (modeloXML.match(/<item\s+[^>]*objectid\s*=/gi) || []).length;
+  const placasXML = rutaPlacas ? await zip.files[rutaPlacas].async('text') : '';
+  const nombresPlacas = nombresPlacasDe3mf(placasXML);
+
+  for (const placa of placas) {
+    if (nombresPlacas[placa.index]) placa.nombre = nombresPlacas[placa.index];
+    for (const filamento of placa.filamentos) {
+      const ranura = filamento.id - 1;
+      if (!filamento.tipo && Array.isArray(settings.filament_type)) {
+        filamento.tipo = settings.filament_type[ranura] || '';
+      }
+      if (!filamento.color && Array.isArray(settings.filament_colour)) {
+        filamento.color = settings.filament_colour[ranura] || '';
+      }
+    }
+  }
+
+  const version = (sliceXML.match(
+    /<header_item\s+key="X-BBL-Client-Version"\s+value="([^"]+)"/) || [])[1]
+    || (modeloXML.match(/<metadata\s+name="Application">([^<]+)<\/metadata>/) || [])[1]
+    || '';
+
+  return {
+    nombre: archivo.name.replace(/\.gcode\.3mf$/i, '').replace(/\.3mf$/i, ''),
+    version,
+    impresora: settings.printer_model || '',
+    boquilla: settings.printer_variant || '',
+    piezas: placas.length === 1 ? Math.max(1, piezasModelo) : 1,
+    placas
+  };
+}
+
 /* ============================ carga general ============================== */
 
 async function recargar() {
@@ -119,6 +399,7 @@ function renderizarTodo() {
   renderizarClientes();
   renderizarFilamentos();
   renderizarPedidos();
+  renderizarCapacidad();
   renderizarMediciones();
   renderizarParametros();
 
@@ -503,15 +784,29 @@ async function guardarComboEnHistorial(indice) {
   }
 }
 
-/* ==================== CLIENTES E INVENTARIO =============================== */
+/* ==================== MÓDULO 4: CLIENTES ================================= */
 
 function renderizarClientes() {
+  dibujarTablaClientes();
+}
+
+function dibujarTablaClientes() {
   const tbody = document.getElementById('body-clientes');
   if (!tbody) return;
 
-  tbody.innerHTML = estado.datos.clientes.map(c => {
-    const cantidad = estado.datos.pedidos.filter(p =>
-      p.clienteId === c.id || p.cliente === c.nombre).length;
+  const filtro = estado.filtros.clientes;
+  const clientes = estado.datos.clientes.map(c => ({
+    ...c,
+    pedidos: estado.datos.pedidos.filter(p =>
+      p.clienteId === c.id || p.cliente === c.nombre).length
+  }));
+  const visibles = aplicarFiltro(clientes, filtro,
+    ['nombre', 'rut', 'razonSocial', 'telefono', 'email']);
+
+  actualizarConteo('conteo-clientes', visibles.length, clientes.length, 'clientes');
+  actualizarFlechas('clientes', filtro);
+
+  tbody.innerHTML = visibles.map(c => {
     return `
     <tr>
       <td><strong>${esc(c.nombre)}</strong>${c.razonSocial && c.razonSocial !== c.nombre
@@ -519,7 +814,7 @@ function renderizarClientes() {
       <td>${c.rut ? esc(c.rut) : '<span class="texto-suave">—</span>'}</td>
       <td>${c.telefono ? esc(c.telefono) : '<span class="texto-suave">—</span>'}</td>
       <td>${c.email ? esc(c.email) : '<span class="texto-suave">—</span>'}</td>
-      <td class="num">${cantidad}</td>
+      <td class="num">${c.pedidos}</td>
       <td class="centrado">
         <button type="button" class="boton boton-suave boton-pequeno"
                 data-action="editar-cliente" data-id="${c.id}" title="Editar">✎</button>
@@ -527,7 +822,9 @@ function renderizarClientes() {
                 data-action="pedir-borrar-cliente" data-id="${c.id}" title="Eliminar">🗑</button>
       </td>
     </tr>`;
-  }).join('') || `<tr><td colspan="6" class="vacio">No hay clientes registrados.</td></tr>`;
+  }).join('') || `<tr><td colspan="6" class="vacio">${
+    clientes.length ? 'No hay clientes que coincidan con la búsqueda.' : 'No hay clientes registrados.'
+  }</td></tr>`;
 }
 
 function renderizarFilamentos() {
@@ -561,22 +858,52 @@ function renderizarFilamentos() {
     </tr>`;
   }).join('') || `<tr><td colspan="6" class="vacio">No hay filamentos registrados.</td></tr>`;
 
+  dibujarTablaMovimientos();
+  renderizarAlertaStock();
+}
+
+function dibujarTablaMovimientos() {
   const movBody = document.getElementById('body-movimientos');
-  if (movBody) {
-    movBody.innerHTML = estado.datos.movimientos.map(m => {
-      const fil = estado.datos.filamentos.find(f => f.id === m.filamentoId);
-      const signo = m.kg > 0 ? '+' : '';
-      const tipo = { entrada: '⬆ Entrada', consumo: '⬇ Consumo', ajuste: '↔ Ajuste' }[m.tipo] || m.tipo;
-      return `
+  if (!movBody) return;
+
+  const filtro = estado.filtros.movimientos;
+  const movimientos = estado.datos.movimientos.map(m => {
+    const fil = estado.datos.filamentos.find(f => f.id === m.filamentoId);
+    return { ...m, filamentoNombre: fil ? fil.nombre : `Filamento ${m.filamentoId}` };
+  });
+  const visibles = aplicarFiltro(movimientos, filtro,
+    ['fecha', 'filamentoNombre', 'tipo', 'motivo']);
+
+  actualizarConteo('conteo-movimientos', visibles.length, movimientos.length, 'movimientos');
+  actualizarFlechas('movimientos', filtro);
+
+  movBody.innerHTML = visibles.map(m => {
+    const signo = m.kg > 0 ? '+' : '';
+    const tipo = { entrada: '⬆ Entrada', consumo: '⬇ Consumo', ajuste: '↔ Ajuste' }[m.tipo] || m.tipo;
+    return `
       <tr>
         <td>${esc(m.fecha)}</td>
-        <td>${esc(fil ? fil.nombre : `Filamento ${m.filamentoId}`)}</td>
+        <td>${esc(m.filamentoNombre)}</td>
         <td>${tipo}</td>
         <td class="num ${m.kg < 0 ? 'stock-bajo' : 'stock-ok'}">${signo}${m.kg.toFixed(3)} kg</td>
         <td>${esc(m.motivo)}</td>
       </tr>`;
-    }).join('') || `<tr><td colspan="5" class="vacio">Sin movimientos todavía.</td></tr>`;
-  }
+  }).join('') || `<tr><td colspan="5" class="vacio">${
+    movimientos.length ? 'No hay movimientos que coincidan con la búsqueda.' : 'Sin movimientos todavía.'
+  }</td></tr>`;
+}
+
+/** Badge global: avisa cuántas bobinas están en o por debajo de su alerta. */
+function renderizarAlertaStock() {
+  const badge = document.getElementById('alerta-stock');
+  if (!badge) return;
+  const bajos = estado.datos.filamentos.filter(f =>
+    Number(f.kg) <= Number(f.kgAlerta)).length;
+  badge.hidden = bajos === 0;
+  document.getElementById('alerta-stock-num').textContent = bajos;
+  badge.title = bajos
+    ? `${bajos} bobina(s) con stock en o por debajo del nivel de alerta`
+    : 'Stock de filamento dentro de los niveles normales';
 }
 
 function actualizarSelectorFilamentos() {
@@ -600,7 +927,7 @@ function actualizarStockFilamento() {
     : 'Selectivo: si elegís un filamento, el consumo se descuenta al guardar.';
 }
 
-/* ===================== MÓDULO 4: PEDIDOS ================================= */
+/* ===================== MÓDULO 5: PEDIDOS ================================= */
 
 function renderizarPedidos() {
   let facturado = 0, enCurso = 0;
@@ -614,9 +941,36 @@ function renderizarPedidos() {
   document.getElementById('kpi-curso').textContent = dinero(enCurso);
 
   dibujarBorradorPedido();
+  dibujarTablaPedidos();
+}
 
-  document.getElementById('body-pedidos').innerHTML = estado.datos.pedidos.map(p => {
-    const t = totalesPedido(p.items, p.conFactura);
+function dibujarTablaPedidos() {
+  const tbody = document.getElementById('body-pedidos');
+  if (!tbody) return;
+
+  const filtro = estado.filtros.pedidos;
+  const pedidos = estado.datos.pedidos.map(p => {
+    const descripciones = (p.items || []).map(it => {
+      const combo = it.comboId != null ? comboPorId(it.comboId) : null;
+      return [
+        it.descripcion,
+        it.articuloId != null ? articuloPorId(it.articuloId)?.nombre : '',
+        combo?.nombre || '',
+        combo?.composicion || '',
+        (combo?.items || []).map(ci =>
+          articuloPorId(ci.articuloId)?.nombre || ci.descripcion || '').join(' ')
+      ].filter(Boolean).join(' ');
+    }).join(' ');
+    return { ...p, ...totalesPedido(p.items, p.conFactura), busqueda: descripciones };
+  });
+  const visibles = aplicarFiltro(pedidos, filtro,
+    ['codigo', 'cliente', 'rut', 'estado', 'fecha', 'numeroFactura', 'busqueda']);
+
+  actualizarConteo('conteo-pedidos', visibles.length, pedidos.length, 'pedidos');
+  actualizarFlechas('pedidos', filtro);
+
+  tbody.innerHTML = visibles.map(p => {
+    const t = p;
     return `
     <tr>
       <td><strong>${esc(p.codigo)}</strong></td>
@@ -666,7 +1020,9 @@ function renderizarPedidos() {
           data-action="pedir-borrar-pedido" data-id="${p.id}"
           title="Anular o eliminar el pedido">🗑</button></td>
     </tr>`;
-  }).join('') || `<tr><td colspan="10" class="vacio">No hay pedidos registrados.</td></tr>`;
+  }).join('') || `<tr><td colspan="10" class="vacio">${
+    pedidos.length ? 'No hay pedidos que coincidan con la búsqueda.' : 'No hay pedidos registrados.'
+  }</td></tr>`;
 }
 
 function dibujarBorradorPedido() {
@@ -804,7 +1160,130 @@ async function crearPedido(evento) {
   }
 }
 
-/* ==================== MÓDULO 5: MEDICIONES =============================== */
+/* ================ IMPORTADOR 3MF — VISTA PREVIA Y CONFIRMACIÓN ============ */
+
+function placaImportada() {
+  const importacion = estado.importacion;
+  if (!importacion) return null;
+  return importacion.placas.find(
+    p => p.index === Number(document.getElementById('imp-placa')?.value)
+  ) || importacion.placas[0];
+}
+
+function renderizarImportacion() {
+  const caja = document.getElementById('imp-resultado');
+  if (!caja) return;
+  const importacion = estado.importacion;
+  if (!importacion) { caja.hidden = true; return; }
+  caja.hidden = false;
+
+  document.getElementById('imp-nombre').textContent = importacion.nombre;
+  const origen = [
+    importacion.version ? `BambuStudio ${importacion.version}` : '',
+    importacion.impresora,
+    importacion.boquilla ? `boquilla ${importacion.boquilla} mm` : ''
+  ].filter(Boolean).join(' · ');
+  document.getElementById('imp-origen').textContent = origen || '3MF importado';
+
+  document.getElementById('imp-placa').innerHTML = importacion.placas.map(p =>
+    `<option value="${p.index}">Plataforma ${p.index}` +
+    `${p.nombre ? ' — ' + esc(p.nombre) : ''} · ` +
+    `${Calc.aReloj(p.segundos / 3600)} · ${p.gramos.toFixed(2)} g</option>`).join('');
+  document.getElementById('imp-placa').value = importacion.indice;
+
+  dibujarDetalleImportacion();
+}
+
+function dibujarDetalleImportacion() {
+  const placa = placaImportada();
+  if (!placa) return;
+
+  document.getElementById('imp-gramos').textContent = `${placa.gramos.toFixed(2)} g`;
+  document.getElementById('imp-tiempo').textContent = Calc.aReloj(placa.segundos / 3600);
+
+  const principal = placa.filamentos.slice().sort((a, b) => b.gramos - a.gramos)[0] || {};
+  const materiales = placa.filamentos.map(f =>
+    [f.tipo, f.color].filter(Boolean).join(' / ') || '—').join(' + ');
+  document.getElementById('imp-material').textContent = materiales || '—';
+
+  const sugerido = sugerirFilamento(principal.tipo, principal.color);
+  const selector = document.getElementById('imp-filamento');
+  selector.innerHTML = `<option value="">— Sin descontar stock —</option>` +
+    estado.datos.filamentos.map(f =>
+      `<option value="${f.id}">${esc(f.codigo)} · ${esc(f.nombre)}` +
+      `${sugerido && f.id === sugerido.id ? '  ⭐ sugerida' : ''}</option>`).join('');
+  selector.value = sugerido ? String(sugerido.id) : '';
+
+  const texto = document.getElementById('imp-sugerencia-texto');
+  if (!estado.datos.filamentos.length) {
+    texto.textContent = 'Todavía no cargaste bobinas. Podés continuar sin descontar stock.';
+  } else if (sugerido) {
+    texto.textContent = `Sugerencia: ${sugerido.codigo} · ${sugerido.nombre} ` +
+      `(${sugerido.material} ${sugerido.color}). Ya viene preseleccionada, pero confirmala ` +
+      `abajo o elegí otra antes de cargar el formulario.`;
+  } else {
+    texto.textContent = 'No hay una bobina que coincida con el material/color del archivo. ' +
+      'Elegí una manualmente o dejá sin descontar stock.';
+  }
+}
+
+async function importar3MF() {
+  const archivo = document.getElementById('imp-archivo')?.files?.[0];
+  if (!archivo) {
+    avisar('⚠️ Elegí un archivo .gcode.3mf de Bambu Studio', 'error');
+    return;
+  }
+  try {
+    avisar('⌁ Leyendo archivo 3MF…');
+    const datos = await leerArchivo3MF(archivo);
+    datos.indice = datos.placas[0].index;
+    estado.importacion = datos;
+    document.getElementById('imp-cantidad').value = datos.piezas;
+    renderizarImportacion();
+    avisar(`✅ ${datos.placas.length} plataforma(s) leídas. Confirmá los datos.`, 'exito');
+  } catch (error) {
+    estado.importacion = null;
+    renderizarImportacion();
+    avisar(`❌ ${error.message}`, 'error');
+  }
+}
+
+function confirmarImportacion() {
+  const placa = placaImportada();
+  if (!placa) return;
+  if (placa.segundos <= 0 || placa.gramos <= 0) {
+    avisar('⚠️ La plataforma no tiene tiempo o peso válido. Probá con otra plataforma.', 'error');
+    return;
+  }
+
+  const cantidad = Math.max(1, Math.floor(
+    Number(document.getElementById('imp-cantidad').value) || 1));
+  actualizarSelectorFilamentos();
+  document.getElementById('med-articulo').value = estado.importacion.nombre;
+  document.getElementById('med-cantidad').value = cantidad;
+  document.getElementById('med-gramos').value = placa.gramos.toFixed(2);
+  document.getElementById('med-impresion').value = Calc.aReloj(placa.segundos / 3600);
+  const bobinaElegida = document.getElementById('imp-filamento').value;
+  document.getElementById('med-filamento').value = bobinaElegida;
+  if (bobinaElegida && document.getElementById('med-filamento').value !== bobinaElegida) {
+    avisar('⚠️ La bobina elegida ya no existe en el inventario. Elegí una manualmente.', 'error');
+  }
+  actualizarStockFilamento();
+
+  cancelarImportacion();
+  document.getElementById('form-medicion')
+    .scrollIntoView({ behavior: 'smooth', block: 'center' });
+  avisar('✅ Datos cargados. Revisá el formulario y apretá «Guardar medición».', 'exito');
+}
+
+function cancelarImportacion() {
+  estado.importacion = null;
+  renderizarImportacion();
+  const archivo = document.getElementById('imp-archivo');
+  if (archivo) archivo.value = '';
+}
+
+/* ==================== MÓDULO 7: MEDICIONES =============================== */
 
 function renderizarMediciones() {
   document.getElementById('body-mediciones').innerHTML = estado.datos.mediciones.map(m => {
@@ -869,7 +1348,131 @@ async function manejarMedicion(evento) {
   }
 }
 
-/* ==================== MÓDULO 6: PARÁMETROS =============================== */
+/* =================== MÓDULO 6: PANEL DE CAPACIDAD ======================== */
+
+const ESTADOS_EN_CURSO = ['Pendiente', 'En Producción', 'Listo para Entrega'];
+
+/** Horas de impresión por unidad, desde la fila calculada o desde el historial. */
+function horasImpresionPorUnidad(articuloId) {
+  if (articuloId == null) return 0;
+  const fila = estado.filasCalculadas.find(f => String(f.articuloId) === String(articuloId));
+  if (fila) {
+    return Math.max(0, Number(fila.impresionLoteH) || 0) /
+           Math.max(1, Number(fila.cantidad) || 1);
+  }
+  const referencia = estado.datos.mediciones.find(
+    m => String(m.articuloId) === String(articuloId));
+  return referencia
+    ? Math.max(0, Number(referencia.impresionH) || 0) /
+      Math.max(1, Number(referencia.cantidad) || 1)
+    : 0;
+}
+
+/** Horas de impresión y piezas de un pedido (los combos se expanden). */
+function horasPedido(pedido) {
+  let horas = 0, piezas = 0;
+  for (const it of pedido.items || []) {
+    const cantidad = Math.max(0, Number(it.cantidad) || 0);
+    if (it.tipo === 'combo' && it.comboId != null) {
+      const combo = comboPorId(it.comboId);
+      for (const ci of combo?.items || []) {
+        horas += horasImpresionPorUnidad(ci.articuloId) *
+                 Math.max(0, Number(ci.cantidad) || 0) * cantidad;
+      }
+      piezas += (combo?.items || []).reduce(
+        (suma, ci) => suma + (Number(ci.cantidad) || 0), 0) * cantidad;
+    } else if (it.articuloId != null) {
+      horas += horasImpresionPorUnidad(it.articuloId) * cantidad;
+      piezas += cantidad;
+    }
+  }
+  return { horas, piezas };
+}
+
+function renderizarCapacidad() {
+  const activos = estado.datos.pedidos
+    .filter(p => ESTADOS_EN_CURSO.includes(p.estado))
+    .map(p => ({ pedido: p, ...horasPedido(p) }));
+  const totalHoras = activos.reduce((suma, fila) => suma + fila.horas, 0);
+  const disponibles = Math.max(1, Number(estado.capacidadHoras) || 40);
+  const porcentaje = (totalHoras / disponibles) * 100;
+
+  document.getElementById('cap-horas-curso').textContent = Calc.aReloj(totalHoras);
+  document.getElementById('cap-horas-disponibles').value = disponibles;
+  document.getElementById('cap-porcentaje').textContent = `${Math.round(porcentaje)} %`;
+
+  const barra = document.getElementById('cap-barra');
+  barra.style.width = `${Math.min(100, porcentaje)}%`;
+  barra.className = 'relleno-progreso' +
+    (porcentaje > 100 ? ' alta' : porcentaje > 70 ? ' media' : '');
+  document.getElementById('cap-estado').textContent = !activos.length
+    ? 'Sin pedidos en curso'
+    : porcentaje > 100 ? '⚠️ Por encima de la capacidad semanal'
+    : porcentaje > 70 ? '🟡 Capacidad ajustada'
+    : '🟢 Dentro de la capacidad';
+
+  const valorStock = estado.datos.filamentos.reduce(
+    (suma, f) => suma + Number(f.kg || 0) * Number(f.costoKg || 0), 0);
+  document.getElementById('cap-valor-stock').textContent = dinero(valorStock);
+
+  /* Top 5: se cuentan los artículos dentro de combos y se ignoran cancelados. */
+  const conteo = new Map();
+  const sumar = (articuloId, unidades, pedidoId) => {
+    if (articuloId == null || unidades <= 0) return;
+    const clave = String(articuloId);
+    const actual = conteo.get(clave) || { unidades: 0, horas: 0, pedidos: new Set() };
+    actual.unidades += unidades;
+    actual.horas += horasImpresionPorUnidad(articuloId) * unidades;
+    actual.pedidos.add(pedidoId);
+    conteo.set(clave, actual);
+  };
+
+  for (const p of estado.datos.pedidos) {
+    if (p.estado === 'Cancelado') continue;
+    for (const it of p.items || []) {
+      const cantidad = Math.max(0, Number(it.cantidad) || 0);
+      if (it.tipo === 'combo' && it.comboId != null) {
+        const combo = comboPorId(it.comboId);
+        for (const ci of combo?.items || []) {
+          sumar(ci.articuloId, (Number(ci.cantidad) || 0) * cantidad, p.id);
+        }
+      } else if (it.articuloId != null) {
+        sumar(it.articuloId, cantidad, p.id);
+      }
+    }
+  }
+
+  const top = [...conteo.entries()]
+    .map(([id, datos]) => ({ id, ...datos, articulo: articuloPorId(id) }))
+    .sort((a, b) => b.unidades - a.unidades)
+    .slice(0, 5);
+
+  document.getElementById('cap-top-articulos').innerHTML = top.map((fila, i) => `
+    <tr>
+      <td class="num">${i + 1}</td>
+      <td><strong>${esc(fila.articulo?.codigo || '—')}</strong>
+          ${esc(fila.articulo?.nombre || `Artículo ${fila.id}`)}</td>
+      <td class="num">${fila.unidades}</td>
+      <td class="num">${Calc.aReloj(fila.horas)}</td>
+      <td class="num">${fila.pedidos.size}</td>
+    </tr>`).join('') ||
+    `<tr><td colspan="5" class="vacio">Todavía no hay artículos en pedidos.</td></tr>`;
+
+  document.getElementById('cap-detalle-pedidos').innerHTML = activos
+    .sort((a, b) => b.horas - a.horas).map(({ pedido, horas, piezas }) => `
+    <tr>
+      <td><strong>${esc(pedido.codigo)}</strong>
+          <br><small class="texto-suave">${esc(pedido.fecha)}</small></td>
+      <td>${esc(pedido.cliente)}</td>
+      <td><span class="etiqueta etiqueta-azul">${esc(pedido.estado)}</span></td>
+      <td class="num">${piezas}</td>
+      <td class="num">${Calc.aReloj(horas)}</td>
+      <td class="num">${totalHoras ? Math.round(horas / totalHoras * 100) : 0} %</td>
+    </tr>`).join('') ||
+    `<tr><td colspan="6" class="vacio">No hay pedidos pendientes ni en producción.</td></tr>`;
+}
+
+/* ==================== MÓDULO 9: PARÁMETROS =============================== */
 
 function renderizarParametros() {
   document.getElementById('body-parametros').innerHTML = estado.datos.parametros.map(p => `
@@ -1070,8 +1673,38 @@ async function manejarAccion(accion, boton) {
       await DataStore.cerrarSesion();
       break;
 
+    case 'ir-inventario':
+      activarPestana('filamentos');
+      break;
+
+    case 'limpiar-filtro': {
+      const tabla = boton.dataset.tabla;
+      const filtro = estado.filtros[tabla];
+      filtro.texto = '';
+      filtro.estado = '';
+      const entrada = document.querySelector(`[data-filtro-texto="${tabla}"]`);
+      if (entrada) entrada.value = '';
+      const selector = document.querySelector(`[data-filtro-estado="${tabla}"]`);
+      if (selector) selector.value = '';
+      redibujarTabla(tabla);
+      break;
+    }
+
     case 'guardar-medicion-cotizador':
       await guardarMedicionDelCotizador();
+      break;
+
+    case 'importar-3mf':
+      await importar3MF();
+      break;
+
+    case 'confirmar-importacion':
+      confirmarImportacion();
+      break;
+
+    case 'cancelar-importacion':
+      cancelarImportacion();
+      avisar('Importación descartada', 'info');
       break;
 
     case 'agregar-linea-combo':
@@ -1278,15 +1911,41 @@ async function manejarFilamento(evento) {
 }
 
 function configurarEventos() {
-  // Pestañas
+  // Módulos del menú lateral
   document.querySelectorAll('.pestana').forEach(boton => {
-    boton.addEventListener('click', () => {
-      document.querySelectorAll('.pestana').forEach(b => b.classList.remove('activa'));
-      document.querySelectorAll('.panel').forEach(p => p.classList.remove('activa'));
-      boton.classList.add('activa');
-      document.getElementById(`tab-${boton.dataset.tab}`).classList.add('activa');
-      if (boton.dataset.tab === 'cotizador' && estado.grafico) estado.grafico.resize();
+    boton.addEventListener('click', () => activarPestana(boton.dataset.tab));
+  });
+
+  // Búsqueda en clientes, pedidos y movimientos (sólo redibuja esa tabla)
+  document.querySelectorAll('[data-filtro-texto]').forEach(input => {
+    input.addEventListener('input', () => {
+      estado.filtros[input.dataset.filtroTexto].texto = input.value;
+      redibujarTabla(input.dataset.filtroTexto);
     });
+  });
+
+  document.querySelectorAll('[data-filtro-estado]').forEach(select => {
+    select.addEventListener('change', () => {
+      estado.filtros[select.dataset.filtroEstado].estado = select.value;
+      redibujarTabla(select.dataset.filtroEstado);
+    });
+  });
+
+  // Orden por columna
+  document.querySelectorAll('.orden').forEach(boton => {
+    boton.addEventListener('click', () => {
+      const filtro = estado.filtros[boton.dataset.tabla];
+      if (filtro.orden === boton.dataset.orden) filtro.dir *= -1;
+      else { filtro.orden = boton.dataset.orden; filtro.dir = 1; }
+      redibujarTabla(boton.dataset.tabla);
+    });
+  });
+
+  // Capacidad de impresora (preferencia local)
+  document.getElementById('cap-horas-disponibles')?.addEventListener('change', evento => {
+    estado.capacidadHoras = Math.max(1, Number(evento.target.value) || 40);
+    guardarPreferencia('printlab.horasImpresora', estado.capacidadHoras);
+    renderizarCapacidad();
   });
 
   // Formularios
@@ -1298,6 +1957,9 @@ function configurarEventos() {
   document.getElementById('art-nombre').addEventListener('input', actualizarPreviewId);
 
   document.getElementById('med-filamento')?.addEventListener('change', actualizarStockFilamento);
+
+  // Importador 3MF de Bambu Studio
+  document.getElementById('imp-placa')?.addEventListener('change', dibujarDetalleImportacion);
 
   // Controles del cotizador (recalc local, sin viaje a la BD)
   ['cot-articulo', 'cot-cantidad', 'cot-factor', 'cot-gramos', 'cot-impresion', 'cot-preparacion']
