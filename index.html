@@ -315,6 +315,16 @@
               </label>
             </div>
           </div>
+          <div id="campos-factura" class="fila-formulario campos-factura" hidden>
+            <div class="campo"><label>RUT *</label>
+              <input type="text" id="ped-rut" placeholder="Ej: 1.234.567-8"></div>
+            <div class="campo campo-ancho"><label>Razón social</label>
+              <input type="text" id="ped-razon" placeholder="Nombre o razón social para la factura"></div>
+            <div class="campo"><label>Nº de factura</label>
+              <input type="text" id="ped-num-factura" placeholder="Ej: A-000123"></div>
+            <div class="campo"><label>Fecha de factura</label>
+              <input type="date" id="ped-fecha-factura"></div>
+          </div>
           <div class="caja-pedido">
             <div class="caja-pedido-cabecera">
               <h3>Ítems del pedido</h3>
@@ -346,12 +356,47 @@
       </div>
 
       <div class="tarjeta">
+        <div class="tarjeta-cabecera">
+          <div>
+            <h2 id="form-cliente-titulo">Nuevo cliente</h2>
+            <p>El nombre se usa en el pedido; el RUT y la razón social van en la factura.</p>
+          </div>
+        </div>
+        <form id="form-cliente" class="fila-formulario">
+          <div class="campo campo-ancho"><label>Nombre *</label>
+            <input type="text" id="cli-nombre" placeholder="Ej: María Fernández" required></div>
+          <div class="campo"><label>RUT</label>
+            <input type="text" id="cli-rut" placeholder="1.234.567-8"></div>
+          <div class="campo"><label>Razón social</label>
+            <input type="text" id="cli-razon" placeholder="Nombre comercial o legal"></div>
+          <div class="campo"><label>Teléfono</label>
+            <input type="text" id="cli-telefono" placeholder="09x xxx xxx"></div>
+          <div class="campo"><label>Email</label>
+            <input type="email" id="cli-email" placeholder="cliente@ejemplo.com"></div>
+          <div class="campo"><label>Dirección</label>
+            <input type="text" id="cli-direccion" placeholder="Calle y número"></div>
+          <div class="campo"><label>Notas</label>
+            <input type="text" id="cli-notas" placeholder="Observaciones"></div>
+          <button type="submit" class="boton boton-primario">＋ Guardar cliente</button>
+        </form>
+        <div class="tabla-envoltorio">
+          <table class="tabla">
+            <thead>
+              <tr><th>Nombre</th><th>RUT</th><th>Teléfono</th><th>Email</th>
+                  <th class="num">Pedidos</th><th class="centrado">—</th></tr>
+            </thead>
+            <tbody id="body-clientes"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tarjeta">
         <div class="tarjeta-cabecera"><h2>Cartera de clientes y pedidos</h2></div>
         <div class="tabla-envoltorio">
           <table class="tabla">
             <thead>
               <tr><th>Código</th><th>Fecha</th><th>Cliente</th><th>Ítems</th>
-                  <th class="centrado">Factura</th>
+                  <th class="centrado">Factura</th><th>Nº Factura</th>
                   <th class="num">Subtotal</th><th class="num">Total</th>
                   <th>Estado</th><th class="centrado">—</th></tr>
             </thead>
@@ -377,6 +422,10 @@
           <div class="campo campo-ancho"><label>Artículo</label><input type="text" id="med-articulo" list="lista-articulos" placeholder="Nombre del artículo" required></div>
           <div class="campo"><label>Cantidad</label><input type="number" id="med-cantidad" min="1" step="1" value="1" required></div>
           <div class="campo"><label>Gramos lote (g)</label><input type="number" id="med-gramos" min="0.01" step="0.01" required></div>
+          <div class="campo"><label>Filamento a descontar</label>
+            <select id="med-filamento"><option value="">— Sin descontar stock —</option></select>
+            <small id="med-stock" class="texto-suave">Selectivo: si elegís un filamento, el consumo se descuenta al guardar.</small>
+          </div>
           <div class="campo"><label>Impresión (hh:mm)</label><input type="text" id="med-impresion" class="entrada-tiempo" placeholder="01:30" data-normalizar-tiempo required></div>
           <div class="campo"><label>Prep. (hh:mm)</label><input type="text" id="med-preparacion" class="entrada-tiempo" value="00:05" data-normalizar-tiempo></div>
           <div class="campo"><label>Post u. (hh:mm)</label><input type="text" id="med-post" class="entrada-tiempo" value="00:00" data-normalizar-tiempo></div>
@@ -402,6 +451,58 @@
                   <th class="centrado">—</th></tr>
             </thead>
             <tbody id="body-mediciones"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tarjeta">
+        <div class="tarjeta-cabecera">
+          <div>
+            <h2>Inventario de filamento</h2>
+            <p>Las mediciones nuevas descuentan el consumo del filamento elegido. Los kg se registran en el libro de movimientos.</p>
+          </div>
+        </div>
+        <form id="form-filamento" class="fila-formulario">
+          <div class="campo"><label>Nombre *</label>
+            <input type="text" id="fil-nombre" placeholder="Ej: PLA Negro" required></div>
+          <div class="campo"><label>Material *</label>
+            <select id="fil-material">
+              <option>PLA</option><option>PETG</option><option>ABS</option>
+              <option>TPU</option><option>PA</option><option>OTRO</option>
+            </select></div>
+          <div class="campo"><label>Color *</label>
+            <input type="text" id="fil-color" placeholder="Negro" required></div>
+          <div class="campo"><label>Stock inicial (kg)</label>
+            <input type="number" id="fil-kg" min="0" step="0.001" value="0"></div>
+          <div class="campo"><label>Alerta (kg)</label>
+            <input type="number" id="fil-alerta" min="0" step="0.001" value="0.5"></div>
+          <div class="campo"><label>Costo por kg</label>
+            <input type="number" id="fil-costo" min="0" step="0.01" value="0"></div>
+          <div class="campo"><label>Proveedor</label>
+            <input type="text" id="fil-proveedor" placeholder="Opcional"></div>
+          <button class="boton boton-primario" type="submit">＋ Agregar filamento</button>
+        </form>
+        <div class="tabla-envoltorio">
+          <table class="tabla">
+            <thead>
+              <tr><th>Código</th><th>Nombre</th><th>Material / Color</th>
+                  <th class="num">Disponible</th><th class="num">Costo/kg</th>
+                  <th>Entrada de stock</th></tr>
+            </thead>
+            <tbody id="body-filamentos"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tarjeta">
+        <div class="tarjeta-cabecera"><h2>Últimos movimientos de filamento</h2></div>
+        <div class="tabla-envoltorio">
+          <table class="tabla">
+            <thead>
+              <tr><th>Fecha</th><th>Filamento</th><th>Tipo</th>
+                  <th class="num">Kg</th><th>Motivo</th></tr>
+            </thead>
+            <tbody id="body-movimientos"></tbody>
           </table>
         </div>
       </div>
@@ -461,6 +562,21 @@
       <button type="submit" class="boton boton-primario ancho-total">Ingresar</button>
       <p class="login-pie">Solo usuarios autorizados por el administrador.</p>
     </form>
+  </div>
+
+  <!-- ====================== MODAL DE CONFIRMACIÓN ===================== -->
+  <div id="modal-confirmar" class="modal-confirmar" role="dialog" aria-modal="true"
+       aria-labelledby="modal-titulo">
+    <div class="tarjeta-modal">
+      <div class="modal-icono">⚠️</div>
+      <h3 id="modal-titulo">¿Confirmar?</h3>
+      <p id="modal-mensaje"></p>
+      <div class="modal-acciones">
+        <button type="button" class="boton boton-suave" data-action="modal-cancelar">Cancelar</button>
+        <button type="button" class="boton boton-contorno" id="modal-anular" data-action="modal-anular" hidden>Anular pedido</button>
+        <button type="button" class="boton boton-peligro" id="modal-confirmar-btn" data-action="modal-confirmar">Eliminar</button>
+      </div>
+    </div>
   </div>
 
   <script src="config.js"></script>

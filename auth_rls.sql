@@ -58,38 +58,48 @@ REVOKE ALL ON FUNCTION public.i3d_usuario_autorizado() FROM anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.i3d_usuario_autorizado() TO authenticated;
 
 -- -----------------------------------------------------------------------------
--- 3. Reemplazar la política abierta por una restrictiva en las 8 tablas
+-- 3. Reemplazar la política abierta por una restrictiva en todas las tablas.
+--    Se omiten las tablas que aún no existen: este archivo puede correrse antes
+--    o después de mejoras.sql (las tablas nuevas se protegen allí también).
 -- -----------------------------------------------------------------------------
 DO $$
 DECLARE t TEXT;
 BEGIN
     FOREACH t IN ARRAY ARRAY[
         'parametros_base','articulos','mediciones_slicer','registro_costos',
-        'combos','combo_items','pedidos','pedido_items'
+        'combos','combo_items','pedidos','pedido_items',
+        'clientes','filamentos','movimientos_filamento'
     ] LOOP
-        EXECUTE format('DROP POLICY IF EXISTS "i3d_acceso_publico" ON %I', t);
-        EXECUTE format('DROP POLICY IF EXISTS "i3d_acceso_autenticado" ON %I', t);
-        EXECUTE format(
-            'CREATE POLICY "i3d_acceso_autenticado" ON %I FOR ALL TO authenticated '
-            'USING (public.i3d_usuario_autorizado()) '
-            'WITH CHECK (public.i3d_usuario_autorizado())',
-            t
-        );
+        IF to_regclass('public.' || t) IS NOT NULL THEN
+            EXECUTE format('DROP POLICY IF EXISTS "i3d_acceso_publico" ON %I', t);
+            EXECUTE format('DROP POLICY IF EXISTS "i3d_acceso_autenticado" ON %I', t);
+            EXECUTE format(
+                'CREATE POLICY "i3d_acceso_autenticado" ON %I FOR ALL TO authenticated '
+                'USING (public.i3d_usuario_autorizado()) '
+                'WITH CHECK (public.i3d_usuario_autorizado())',
+                t
+            );
+        END IF;
     END LOOP;
 END $$;
 
 -- -----------------------------------------------------------------------------
 -- 4. Quitar permisos al rol anon en tablas, vistas y RPCs
 -- -----------------------------------------------------------------------------
-REVOKE ALL ON TABLE
-    parametros_base, articulos, mediciones_slicer, registro_costos,
-    combos, combo_items, pedidos, pedido_items
-FROM anon;
-
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
-    parametros_base, articulos, mediciones_slicer, registro_costos,
-    combos, combo_items, pedidos, pedido_items
-TO authenticated;
+DO $$
+DECLARE t TEXT;
+BEGIN
+    FOREACH t IN ARRAY ARRAY[
+        'parametros_base','articulos','mediciones_slicer','registro_costos',
+        'combos','combo_items','pedidos','pedido_items',
+        'clientes','filamentos','movimientos_filamento'
+    ] LOOP
+        IF to_regclass('public.' || t) IS NOT NULL THEN
+            EXECUTE format('REVOKE ALL ON TABLE public.%I FROM anon', t);
+            EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.%I TO authenticated', t);
+        END IF;
+    END LOOP;
+END $$;
 
 REVOKE ALL ON v_catalogo_articulos, v_combos_detalle, v_resumen_pedidos FROM anon;
 GRANT SELECT ON v_catalogo_articulos, v_combos_detalle, v_resumen_pedidos TO authenticated;
@@ -173,12 +183,22 @@ BEGIN
     RETURN v_id;
 END $$;
 
+-- Se retiran las firmas viejas para que no queden RPCs sin datos fiscales.
+DROP FUNCTION IF EXISTS api_crear_pedido(TEXT, DATE, TEXT, JSONB) CASCADE;
+DROP FUNCTION IF EXISTS api_crear_pedido(TEXT, DATE, TEXT, JSONB, BOOLEAN) CASCADE;
+DROP FUNCTION IF EXISTS api_crear_pedido(TEXT, DATE, TEXT, JSONB, BOOLEAN, BIGINT, TEXT, TEXT, TEXT, DATE) CASCADE;
+
 CREATE OR REPLACE FUNCTION api_crear_pedido(
-    p_cliente      TEXT,
-    p_fecha        DATE,
-    p_estado       TEXT,
-    p_items        JSONB,
-    p_con_factura  BOOLEAN DEFAULT false
+    p_cliente         TEXT,
+    p_fecha           DATE,
+    p_estado          TEXT,
+    p_items           JSONB,
+    p_con_factura     BOOLEAN DEFAULT false,
+    p_cliente_id      BIGINT DEFAULT NULL,
+    p_rut             TEXT DEFAULT NULL,
+    p_razon_social    TEXT DEFAULT NULL,
+    p_numero_factura  TEXT DEFAULT NULL,
+    p_fecha_factura   DATE DEFAULT NULL
 )
 RETURNS TEXT
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
@@ -200,9 +220,18 @@ BEGIN
     IF jsonb_array_length(coalesce(p_items, '[]'::jsonb)) = 0 THEN
         RAISE EXCEPTION 'El pedido debe tener al menos un ítem';
     END IF;
+    IF coalesce(p_con_factura, false) AND btrim(coalesce(p_rut, '')) = '' THEN
+        RAISE EXCEPTION 'Un pedido con factura debe tener RUT';
+    END IF;
 
-    INSERT INTO pedidos(cliente, fecha, estado, con_factura)
-    VALUES (btrim(p_cliente), p_fecha, v_estado, coalesce(p_con_factura, false))
+    INSERT INTO pedidos(cliente, cliente_id, fecha, estado, con_factura,
+                        rut, razon_social, numero_factura, fecha_factura)
+    VALUES (btrim(p_cliente), p_cliente_id, p_fecha, v_estado,
+            coalesce(p_con_factura, false),
+            nullif(btrim(coalesce(p_rut, '')), ''),
+            nullif(btrim(coalesce(p_razon_social, '')), ''),
+            nullif(btrim(coalesce(p_numero_factura, '')), ''),
+            p_fecha_factura)
     RETURNING id, codigo INTO v_id, v_codigo;
 
     FOR v_it IN SELECT * FROM jsonb_array_elements(p_items) LOOP
@@ -222,13 +251,26 @@ BEGIN
     RETURN v_codigo;
 END $$;
 
-REVOKE ALL ON FUNCTION api_obtener_o_crear_articulo(TEXT) FROM anon;
-REVOKE ALL ON FUNCTION api_guardar_combo(TEXT, DATE, NUMERIC, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, JSONB) FROM anon;
-REVOKE ALL ON FUNCTION api_crear_pedido(TEXT, DATE, TEXT, JSONB, BOOLEAN) FROM anon;
-
-GRANT EXECUTE ON FUNCTION api_obtener_o_crear_articulo(TEXT) TO authenticated;
-GRANT EXECUTE ON FUNCTION api_guardar_combo(TEXT, DATE, NUMERIC, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, JSONB) TO authenticated;
-GRANT EXECUTE ON FUNCTION api_crear_pedido(TEXT, DATE, TEXT, JSONB, BOOLEAN) TO authenticated;
+-- Permisos sobre todas las RPC (solo si existen: este archivo puede correrse
+-- antes o después de la migración de mejoras).
+DO $$
+DECLARE fn TEXT;
+BEGIN
+    FOREACH fn IN ARRAY ARRAY[
+        'api_obtener_o_crear_articulo','api_obtener_o_crear_cliente',
+        'api_guardar_medicion','api_crear_filamento','api_mover_filamento',
+        'api_guardar_combo','api_crear_pedido'
+    ] LOOP
+        IF EXISTS (
+            SELECT 1 FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'public' AND p.proname = fn
+        ) THEN
+            EXECUTE format('REVOKE ALL ON FUNCTION public.%I FROM anon', fn);
+            EXECUTE format('GRANT EXECUTE ON FUNCTION public.%I TO authenticated', fn);
+        END IF;
+    END LOOP;
+END $$;
 
 COMMIT;
 

@@ -23,6 +23,21 @@ Conserva la lógica y el propósito del original:
 - **Acceso privado**: login con Supabase Auth + lista blanca de correos y RLS
   restrictivo. La clave *publishable* sigue siendo pública (es normal), pero sin
   sesión la BD no devuelve ningún dato.
+- **Clientes con datos fiscales**: cada cliente guarda RUT, razón social,
+  teléfono, email, dirección y notas. Al facturar, el pedido copia RUT y razón
+  social y permite cargar número y fecha de factura. La tabla de clientes queda
+  dentro del módulo *Clientes y pedidos* (no agregamos una séptima pestaña).
+- **Stock de filamento**: dentro de *Mediciones del slicer* se cargan bobinas con
+  kg disponibles, alerta y costo por kg. Al guardar una medición nueva podés
+  elegir un filamento: el consumo (gramos / 1000) se descuenta en la misma
+  transacción y queda registrado en un libro de entradas, consumos y ajustes.
+- **Borrados confirmados**: reemplazamos los `confirm()` del navegador por un
+  modal propio. Al borrar un pedido podés elegir **anularlo** (marca *Cancelado*
+  y conserva el histórico) o **eliminarlo** definitivamente.
+
+> Orden de migraciones sobre una BD ya existente:
+> `migration_factura.sql` → `auth_rls.sql` → `mejoras.sql`.
+> Ninguna borra datos. `supabase_schema.sql` es solo para reconstruir desde cero.
 
 ---
 
@@ -41,8 +56,9 @@ Conserva la lógica y el propósito del original:
 | Inserción de pedido en 2 consultas | RPC `api_crear_pedido` transaccional |
 | RLS permisivo sin grants explícitos | RLS por tabla + Supabase Auth + lista blanca de correos; `anon` sin permisos |
 
-Tablas nuevas: `parametros_base`, `articulos`, `mediciones_slicer`,
-`registro_costos`, `combos`, `combo_items`, `pedidos`, `pedido_items`.
+Tablas: `parametros_base`, `articulos`, `mediciones_slicer`,
+`registro_costos`, `combos`, `combo_items`, `pedidos`, `pedido_items`,
+`clientes`, `filamentos`, `movimientos_filamento`, `usuarios_autorizados`.
 
 ---
 
@@ -57,10 +73,15 @@ Tablas nuevas: `parametros_base`, `articulos`, `mediciones_slicer`,
 > ⚠️ El script **elimina las tablas anteriores y sus datos** y vuelve a cargar
 > los datos de ejemplo. Es una reconstrucción desde cero, como pediste.
 
-> Si **ya tenés la BD v2 funcionando**, no vuelvas a ejecutar el schema completo:
-> corré solamente `migration_factura.sql`. Agrega la columna `con_factura`,
-> actualiza la RPC de pedidos y la vista de resumen, **sin borrar datos**.
-> (También reaplica el fix de `api_obtener_o_crear_articulo`.)
+> Si **ya tenés la BD v2 funcionando**, no vuelvas a ejecutar el schema completo.
+> Corré, en este orden y sin borrar datos:
+> 1. `migration_factura.sql` → columna `con_factura`, RPC de pedidos y vista.
+> 2. `auth_rls.sql` → login, lista blanca y RLS (reaplica el fix de
+>    `api_obtener_o_crear_articulo`).
+> 3. `mejoras.sql` → clientes, datos fiscales, filamentos y movimientos.
+>
+> Si reconstruiste la BD con `supabase_schema.sql` actualizado, los tres pasos ya
+> están incluidos y no hace falta correr las migraciones.
 
 ### 2. Activar el acceso privado (login + RLS)
 
@@ -69,8 +90,11 @@ Habilitá el login y cerrá la BD para que solo vos puedas entrar:
 1. **Authentication → Providers → Email**: habilitado (y desactivá *Confirm email*
    si querés entrar sin verificar el correo, o dejalo activo para más seguridad).
 2. **Authentication → Users → Add user**: creá tu usuario con email y contraseña.
-3. Editá `auth_rls.sql` y reemplazá `TU-EMAIL@ejemplo.com` por ese email.
+3. Editá `auth_rls.sql` y reemplazá `TU-EMAIL@ejemplo.com` por ese email
+   (si ya figurás con tu dirección, verificá que sea la correcta).
 4. **SQL Editor → New query → Run** con todo `auth_rls.sql`. No borra datos.
+5. Recién después corré `mejoras.sql` (usa la función de autorización creada
+   en el paso anterior).
 
 > Esto crea la tabla `usuarios_autorizados`, reemplaza la política abierta por
 > `i3d_acceso_autenticado` y les quita todos los permisos al rol `anon`.
@@ -110,7 +134,7 @@ y que tu email esté en `usuarios_autorizados`.
 1. **Subí los archivos a un repo de GitHub** (aunque antes usaras Pages u otro
    hosting): creá un repo nuevo y hacé commit de **todos** los archivos de esta
    carpeta (`index.html`, `config.js`, `engine.js`, `db.js`, `app.js`,
-   `styles.css` y los `.sql`).
+   `styles.css` y los `.sql`, incluido `mejoras.sql`).
 2. Entrá a [Cloudflare Dashboard](https://dash.cloudflare.com/) →
    **Workers & Pages → Create → Pages → Connect to Git**.
 3. Elegí tu cuenta de GitHub y el repo. En *Build settings*:
@@ -142,6 +166,7 @@ gestion_impresion_3d_v2/
 ├── fix_rpc.sql           ← parche puntual si ya aplicaste el schema antes del fix
 ├── migration_factura.sql ← migra una BD v2 existente: con_factura + IVA 22 %
 ├── auth_rls.sql          ← login + lista blanca + RLS restrictivo (no borra datos)
+├── mejoras.sql           ← clientes, datos fiscales, filamentos y movimientos (no borra datos)
 ├── config.js             ← URL y clave pública de Supabase
 ├── engine.js             ← motor de cálculo (fórmulas, hh:mm, IVA, combos, equilibrio)
 ├── db.js                 ← capa de persistencia y adaptadores al modelo de vista
@@ -176,3 +201,7 @@ gestion_impresion_3d_v2/
 - **`Could not find the function public.api_crear_pedido(...)` o falta
   `con_factura`**: no ejecutaste `migration_factura.sql`. Corré ese archivo en
   el SQL Editor (no borra datos) y recargá.
+- **Faltan `clientes`, `filamentos` o `movimientos_filamento`**: corré
+  `mejoras.sql` (después de `auth_rls.sql`). No borra datos.
+- **`No autorizado` al guardar una medición o un pedido**: tu email no está en
+  `usuarios_autorizados`, o no corriste `auth_rls.sql`/`mejoras.sql`.

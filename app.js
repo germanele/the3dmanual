@@ -9,14 +9,19 @@
 'use strict';
 
 const estado = {
-  datos: { parametros: [], articulos: [], mediciones: [], registro: [], combos: [], pedidos: [] },
+  datos: {
+    parametros: [], articulos: [], mediciones: [], registro: [], combos: [], pedidos: [],
+    clientes: [], filamentos: [], movimientos: []
+  },
   parametros: {},
   filasCalculadas: [],
   combo: { presupuesto: 3278, factor: '2', lineas: [], opciones: [], items: [] },
   borradorPedido: [{ tipo: 'articulo', refId: '', cantidad: 1, precioUnitario: 0 }],
   comboInicializado: false,
   grafico: null,
-  ultimaCotizacion: null
+  ultimaCotizacion: null,
+  clienteEditando: null,
+  confirmacion: null
 };
 
 const ESTADOS_PEDIDO = ['Pendiente', 'En Producción', 'Listo para Entrega', 'Entregado', 'Cancelado'];
@@ -111,15 +116,17 @@ function renderizarTodo() {
   renderizarCatalogo();
   renderizarCotizador();
   renderizarCombos();
+  renderizarClientes();
+  renderizarFilamentos();
   renderizarPedidos();
   renderizarMediciones();
   renderizarParametros();
 
   document.getElementById('lista-articulos').innerHTML = estado.datos.articulos
     .map(a => `<option value="${esc(a.nombre)}">`).join('');
-  document.getElementById('lista-clientes').innerHTML = [...new Set(
-    estado.datos.pedidos.map(p => p.cliente).filter(Boolean)
-  )].map(c => `<option value="${esc(c)}">`).join('');
+  document.getElementById('lista-clientes').innerHTML = estado.datos.clientes
+    .map(c => `<option value="${esc(c.nombre)}">`).join('');
+  actualizarSelectorFilamentos();
 
   actualizarPreviewId();
 }
@@ -496,6 +503,103 @@ async function guardarComboEnHistorial(indice) {
   }
 }
 
+/* ==================== CLIENTES E INVENTARIO =============================== */
+
+function renderizarClientes() {
+  const tbody = document.getElementById('body-clientes');
+  if (!tbody) return;
+
+  tbody.innerHTML = estado.datos.clientes.map(c => {
+    const cantidad = estado.datos.pedidos.filter(p =>
+      p.clienteId === c.id || p.cliente === c.nombre).length;
+    return `
+    <tr>
+      <td><strong>${esc(c.nombre)}</strong>${c.razonSocial && c.razonSocial !== c.nombre
+        ? `<br><small class="texto-suave">${esc(c.razonSocial)}</small>` : ''}</td>
+      <td>${c.rut ? esc(c.rut) : '<span class="texto-suave">—</span>'}</td>
+      <td>${c.telefono ? esc(c.telefono) : '<span class="texto-suave">—</span>'}</td>
+      <td>${c.email ? esc(c.email) : '<span class="texto-suave">—</span>'}</td>
+      <td class="num">${cantidad}</td>
+      <td class="centrado">
+        <button type="button" class="boton boton-suave boton-pequeno"
+                data-action="editar-cliente" data-id="${c.id}" title="Editar">✎</button>
+        <button type="button" class="boton boton-peligro boton-pequeno"
+                data-action="pedir-borrar-cliente" data-id="${c.id}" title="Eliminar">🗑</button>
+      </td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="6" class="vacio">No hay clientes registrados.</td></tr>`;
+}
+
+function renderizarFilamentos() {
+  const tbody = document.getElementById('body-filamentos');
+  if (!tbody) return;
+
+  tbody.innerHTML = estado.datos.filamentos.map(f => {
+    const bajo = f.kg <= f.kgAlerta;
+    return `
+    <tr>
+      <td><strong>${esc(f.codigo)}</strong></td>
+      <td>${esc(f.nombre)}</td>
+      <td><span class="etiqueta etiqueta-azul">${esc(f.material)}</span>
+          <span class="texto-suave">${esc(f.color)}</span></td>
+      <td class="num ${bajo ? 'stock-bajo' : 'stock-ok'}">
+        <strong>${f.kg.toFixed(3)} kg</strong>
+        ${bajo ? '<br><small>⚠️ Stock bajo</small>' : ''}
+      </td>
+      <td class="num">${dinero(f.costoKg)}</td>
+      <td>
+        <div class="grupo-botones">
+          <input type="number" class="entrada-inline corta" min="0.001" step="0.001"
+                 placeholder="kg" data-campo="fil-entrada" data-id="${f.id}"
+                 title="Kilogramos a agregar">
+          <button type="button" class="boton boton-contorno boton-pequeno"
+                  data-action="entrada-filamento" data-id="${f.id}" title="Registrar entrada">＋</button>
+          <button type="button" class="boton boton-peligro boton-pequeno"
+                  data-action="pedir-borrar-filamento" data-id="${f.id}" title="Eliminar">🗑</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="6" class="vacio">No hay filamentos registrados.</td></tr>`;
+
+  const movBody = document.getElementById('body-movimientos');
+  if (movBody) {
+    movBody.innerHTML = estado.datos.movimientos.map(m => {
+      const fil = estado.datos.filamentos.find(f => f.id === m.filamentoId);
+      const signo = m.kg > 0 ? '+' : '';
+      const tipo = { entrada: '⬆ Entrada', consumo: '⬇ Consumo', ajuste: '↔ Ajuste' }[m.tipo] || m.tipo;
+      return `
+      <tr>
+        <td>${esc(m.fecha)}</td>
+        <td>${esc(fil ? fil.nombre : `Filamento ${m.filamentoId}`)}</td>
+        <td>${tipo}</td>
+        <td class="num ${m.kg < 0 ? 'stock-bajo' : 'stock-ok'}">${signo}${m.kg.toFixed(3)} kg</td>
+        <td>${esc(m.motivo)}</td>
+      </tr>`;
+    }).join('') || `<tr><td colspan="5" class="vacio">Sin movimientos todavía.</td></tr>`;
+  }
+}
+
+function actualizarSelectorFilamentos() {
+  const select = document.getElementById('med-filamento');
+  if (!select) return;
+  const anterior = select.value;
+  select.innerHTML = `<option value="">— Sin descontar stock —</option>` +
+    estado.datos.filamentos.map(f =>
+      `<option value="${f.id}" ${String(anterior) === String(f.id) ? 'selected' : ''}>` +
+      `${esc(f.nombre)} (${f.kg.toFixed(3)} kg)</option>`).join('');
+  actualizarStockFilamento();
+}
+
+function actualizarStockFilamento() {
+  const label = document.getElementById('med-stock');
+  const select = document.getElementById('med-filamento');
+  if (!label) return;
+  const f = estado.datos.filamentos.find(x => String(x.id) === String(select?.value));
+  label.textContent = f
+    ? `Disponible: ${f.kg.toFixed(3)} kg${f.kg <= f.kgAlerta ? ' ⚠️ stock bajo' : ''}`
+    : 'Selectivo: si elegís un filamento, el consumo se descuenta al guardar.';
+}
+
 /* ===================== MÓDULO 4: PEDIDOS ================================= */
 
 function renderizarPedidos() {
@@ -517,7 +621,9 @@ function renderizarPedidos() {
     <tr>
       <td><strong>${esc(p.codigo)}</strong></td>
       <td>${esc(p.fecha)}</td>
-      <td><strong>${esc(p.cliente)}</strong></td>
+      <td><strong>${esc(p.cliente)}</strong>
+        ${p.rut ? `<br><small class="texto-suave">${esc(p.rut)}</small>` : ''}
+      </td>
       <td>
         <div class="lista-items">
           ${p.items.map(it => `
@@ -543,6 +649,9 @@ function renderizarPedidos() {
           ${p.conFactura ? 'Sí' : 'No'}
         </label>
       </td>
+      <td>${p.numeroFactura
+        ? `<strong>${esc(p.numeroFactura)}</strong>${p.fechaFactura ? `<br><small class="texto-suave">${esc(p.fechaFactura)}</small>` : ''}`
+        : '<span class="texto-suave">—</span>'}</td>
       <td class="num">${dinero(t.subtotal)}</td>
       <td class="num negrita texto-acento"
           title="${p.conFactura ? `Incluye ${dinero(t.iva)} de IVA (22 %)` : 'Sin IVA — subtotal y total coinciden'}">
@@ -553,9 +662,11 @@ function renderizarPedidos() {
           ${ESTADOS_PEDIDO.map(e => `<option ${p.estado === e ? 'selected' : ''}>${e}</option>`).join('')}
         </select>
       </td>
-      <td class="centrado"><button type="button" class="boton boton-peligro" data-action="borrar-pedido" data-id="${p.id}">🗑</button></td>
+      <td class="centrado"><button type="button" class="boton boton-peligro"
+          data-action="pedir-borrar-pedido" data-id="${p.id}"
+          title="Anular o eliminar el pedido">🗑</button></td>
     </tr>`;
-  }).join('') || `<tr><td colspan="9" class="vacio">No hay pedidos registrados.</td></tr>`;
+  }).join('') || `<tr><td colspan="10" class="vacio">No hay pedidos registrados.</td></tr>`;
 }
 
 function dibujarBorradorPedido() {
@@ -634,10 +745,21 @@ async function crearPedido(evento) {
   const cliente = document.getElementById('ped-cliente').value.trim();
   const estadoPedido = document.getElementById('ped-estado').value;
   const conFactura = document.getElementById('ped-factura')?.checked || false;
+  const fiscal = {
+    rut: document.getElementById('ped-rut')?.value.trim() || '',
+    razonSocial: document.getElementById('ped-razon')?.value.trim() || '',
+    numeroFactura: document.getElementById('ped-num-factura')?.value.trim() || '',
+    fechaFactura: document.getElementById('ped-fecha-factura')?.value || ''
+  };
   const lineas = estado.borradorPedido.filter(l => l.refId && l.cantidad >= 1);
 
   if (!cliente) { avisar('⚠️ Ingresá el nombre del cliente', 'error'); return; }
   if (!lineas.length) { avisar('⚠️ Agregá al menos un artículo o combo', 'error'); return; }
+  if (conFactura && !fiscal.rut) {
+    avisar('⚠️ Un pedido con factura necesita el RUT', 'error');
+    document.getElementById('ped-rut').focus();
+    return;
+  }
 
   const items = lineas.map(l => {
     if (l.tipo === 'combo') {
@@ -661,10 +783,18 @@ async function crearPedido(evento) {
   });
 
   try {
-    const codigo = await DataStore.crearPedido({ fecha, cliente, estado: estadoPedido, conFactura }, items);
+    const clienteBD = await DataStore.obtenerOCrearCliente({
+      nombre: cliente, rut: fiscal.rut, razonSocial: fiscal.razonSocial
+    });
+    const codigo = await DataStore.crearPedido({
+      fecha, cliente, clienteId: clienteBD.id, estado: estadoPedido, conFactura, ...fiscal
+    }, items);
     const t = totalesPedido(items, conFactura);
     document.getElementById('ped-cliente').value = '';
     document.getElementById('ped-factura').checked = false;
+    ['ped-rut', 'ped-razon', 'ped-num-factura', 'ped-fecha-factura']
+      .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    alternarCamposFactura();
     estado.borradorPedido = [{ tipo: 'articulo', refId: '', cantidad: 1, precioUnitario: 0 }];
     await recargar();
     avisar(`✅ Pedido ${codigo} creado para ${cliente} — total ${dinero(t.total)}` +
@@ -723,7 +853,8 @@ async function manejarMedicion(evento) {
       impresionH: imp,
       preparacionH: Number.isFinite(prep) ? prep : 0,
       postUnitH: Number.isFinite(post) ? post : 0,
-      factor: Number(document.getElementById('med-factor').value) || 2.5
+      factor: Number(document.getElementById('med-factor').value) || 2.5,
+      filamentoId: Number(document.getElementById('med-filamento')?.value) || null
     });
     evento.target.reset();
     document.getElementById('med-fecha').value = hoyISO();
@@ -868,6 +999,63 @@ async function manejarCampo(elemento) {
   }
 }
 
+/* ================== CONFIRMACIONES (modal, sin confirm()) ================= */
+
+function pedirConfirmacion({ titulo, mensaje, etiqueta = 'Eliminar', anular = null,
+                             onConfirmar, onAnular }) {
+  estado.confirmacion = { onConfirmar, onAnular };
+  document.getElementById('modal-titulo').textContent = titulo;
+  document.getElementById('modal-mensaje').textContent = mensaje;
+  const botonAnular = document.getElementById('modal-anular');
+  botonAnular.hidden = !anular;
+  botonAnular.textContent = anular || 'Anular pedido';
+  document.getElementById('modal-confirmar-btn').textContent = etiqueta;
+  document.getElementById('modal-confirmar').classList.add('visible');
+}
+
+function cerrarConfirmacion() {
+  estado.confirmacion = null;
+  document.getElementById('modal-confirmar').classList.remove('visible');
+}
+
+async function ejecutarConfirmacion(tipo) {
+  const callback = estado.confirmacion?.[tipo];
+  cerrarConfirmacion();
+  if (callback) await callback();
+}
+
+function alternarCamposFactura() {
+  const conFactura = document.getElementById('ped-factura')?.checked || false;
+  const bloque = document.getElementById('campos-factura');
+  if (bloque) bloque.hidden = !conFactura;
+  const rut = document.getElementById('ped-rut');
+  if (rut) rut.required = conFactura;
+}
+
+async function borrarPedido(id) {
+  await DataStore.eliminarPedido(id);
+  await recargar();
+  avisar('🗑 Pedido eliminado', 'exito');
+}
+
+async function anularPedido(id) {
+  await DataStore.cambiarEstadoPedido(id, 'Cancelado');
+  await recargar();
+  avisar('⊘ Pedido anulado (el histórico se conserva)', 'exito');
+}
+
+async function borrarCliente(id) {
+  await DataStore.eliminarCliente(id);
+  await recargar();
+  avisar('🗑 Cliente eliminado', 'exito');
+}
+
+async function borrarFilamento(id) {
+  await DataStore.eliminarFilamento(id);
+  await recargar();
+  avisar('🗑 Filamento eliminado', 'exito');
+}
+
 async function manejarAccion(accion, boton) {
   const id = Number(boton.dataset.id);
   const indice = Number(boton.dataset.indice);
@@ -902,17 +1090,27 @@ async function manejarAccion(accion, boton) {
       break;
 
     case 'borrar-registro':
-      if (!confirm('¿Eliminar esta fila del catálogo?')) break;
-      await DataStore.eliminarRegistro(id);
-      await recargar();
-      avisar('🗑 Fila eliminada', 'exito');
+      pedirConfirmacion({
+        titulo: 'Eliminar fila del catálogo',
+        mensaje: '¿Eliminar esta fila del catálogo de costos? Esta acción no se puede deshacer.',
+        onConfirmar: async () => {
+          await DataStore.eliminarRegistro(id);
+          await recargar();
+          avisar('🗑 Fila eliminada', 'exito');
+        }
+      });
       break;
 
     case 'borrar-combo':
-      if (!confirm('¿Eliminar este combo del historial?')) break;
-      await DataStore.eliminarCombo(id);
-      await recargar();
-      avisar('🗑 Combo eliminado', 'exito');
+      pedirConfirmacion({
+        titulo: 'Eliminar combo',
+        mensaje: '¿Eliminar este combo del historial? Los pedidos que lo usen se conservan.',
+        onConfirmar: async () => {
+          await DataStore.eliminarCombo(id);
+          await recargar();
+          avisar('🗑 Combo eliminado', 'exito');
+        }
+      });
       break;
 
     case 'agregar-linea-pedido':
@@ -928,11 +1126,30 @@ async function manejarAccion(accion, boton) {
       dibujarBorradorPedido();
       break;
 
-    case 'borrar-pedido':
-      if (!confirm('¿Eliminar el pedido y todos sus ítems?')) break;
-      await DataStore.eliminarPedido(id);
-      await recargar();
-      avisar('🗑 Pedido eliminado', 'exito');
+    case 'pedir-borrar-pedido': {
+      const pedido = estado.datos.pedidos.find(p => p.id === id);
+      pedirConfirmacion({
+        titulo: `Pedido ${pedido?.codigo || ''}`,
+        mensaje: 'Anularlo conserva el histórico y solo lo marca como Cancelado. ' +
+                 'Eliminarlo borra el pedido y todos sus ítems definitivamente.',
+        etiqueta: 'Eliminar definitivamente',
+        anular: 'Anular pedido',
+        onConfirmar: () => borrarPedido(id),
+        onAnular: () => anularPedido(id)
+      });
+      break;
+    }
+
+    case 'modal-cancelar':
+      cerrarConfirmacion();
+      break;
+
+    case 'modal-confirmar':
+      await ejecutarConfirmacion('onConfirmar');
+      break;
+
+    case 'modal-anular':
+      await ejecutarConfirmacion('onAnular');
       break;
 
     case 'borrar-item-pedido':
@@ -942,11 +1159,121 @@ async function manejarAccion(accion, boton) {
       break;
 
     case 'borrar-medicion':
-      if (!confirm('¿Eliminar esta medición real?')) break;
-      await DataStore.eliminarMedicion(id);
-      await recargar();
-      avisar('🗑 Medición eliminada', 'exito');
+      pedirConfirmacion({
+        titulo: 'Eliminar medición real',
+        mensaje: '¿Eliminar esta medición del slicer? Se recalcularán los costos.',
+        onConfirmar: async () => {
+          await DataStore.eliminarMedicion(id);
+          await recargar();
+          avisar('🗑 Medición eliminada', 'exito');
+        }
+      });
       break;
+
+    case 'editar-cliente': {
+      const c = estado.datos.clientes.find(x => x.id === id);
+      if (!c) break;
+      estado.clienteEditando = c.id;
+      document.getElementById('cli-nombre').value = c.nombre;
+      document.getElementById('cli-rut').value = c.rut;
+      document.getElementById('cli-razon').value = c.razonSocial;
+      document.getElementById('cli-telefono').value = c.telefono;
+      document.getElementById('cli-email').value = c.email;
+      document.getElementById('cli-direccion').value = c.direccion;
+      document.getElementById('cli-notas').value = c.notas;
+      document.getElementById('form-cliente-titulo').textContent = 'Editar cliente';
+      document.getElementById('cli-nombre').focus();
+      break;
+    }
+
+    case 'pedir-borrar-cliente': {
+      const c = estado.datos.clientes.find(x => x.id === id);
+      const usos = estado.datos.pedidos.filter(p => p.clienteId === id).length;
+      pedirConfirmacion({
+        titulo: 'Eliminar cliente',
+        mensaje: usos
+          ? `El cliente ${c?.nombre || ''} tiene ${usos} pedido(s) vinculado(s). ` +
+            'Se desvincularán, pero los pedidos se conservan.'
+          : `¿Eliminar el cliente ${c?.nombre || ''}?`,
+        onConfirmar: () => borrarCliente(id)
+      });
+      break;
+    }
+
+    case 'pedir-borrar-filamento': {
+      const f = estado.datos.filamentos.find(x => x.id === id);
+      pedirConfirmacion({
+        titulo: 'Eliminar filamento',
+        mensaje: `¿Eliminar ${f?.nombre || 'el filamento'}? Solo se puede si no tiene ` +
+                 'movimientos de inventario registrados.',
+        onConfirmar: () => borrarFilamento(id)
+      });
+      break;
+    }
+
+    case 'entrada-filamento': {
+      const input = document.querySelector(`[data-campo="fil-entrada"][data-id="${id}"]`);
+      const kg = Number(input?.value) || 0;
+      if (kg <= 0) { avisar('⚠️ Ingresá una cantidad de kg mayor a cero', 'error'); return; }
+      try {
+        await DataStore.moverFilamento(id, 'entrada', kg, 'Entrada de stock registrada en la app');
+        await recargar();
+        avisar(`✅ Entrada de ${kg.toFixed(3)} kg registrada`, 'exito');
+      } catch (error) {
+        avisar(`❌ ${error.message}`, 'error');
+      }
+      break;
+    }
+  }
+}
+
+/* ====================== FORMULARIOS NUEVOS ================================ */
+
+async function manejarCliente(evento) {
+  evento.preventDefault();
+  const valor = id => document.getElementById(id)?.value.trim() || '';
+  const campos = {
+    nombre: valor('cli-nombre'), rut: valor('cli-rut'),
+    razonSocial: valor('cli-razon'), telefono: valor('cli-telefono'),
+    email: valor('cli-email'), direccion: valor('cli-direccion'),
+    notas: valor('cli-notas')
+  };
+  if (!campos.nombre) { avisar('⚠️ Ingresá el nombre del cliente', 'error'); return; }
+  try {
+    if (estado.clienteEditando) {
+      await DataStore.actualizarCliente(estado.clienteEditando, campos);
+      avisar('✅ Cliente actualizado', 'exito');
+    } else {
+      await DataStore.obtenerOCrearCliente(campos);
+      avisar('✅ Cliente guardado', 'exito');
+    }
+    evento.target.reset();
+    estado.clienteEditando = null;
+    document.getElementById('form-cliente-titulo').textContent = 'Nuevo cliente';
+    await recargar();
+  } catch (error) {
+    avisar(`❌ ${error.message}`, 'error');
+  }
+}
+
+async function manejarFilamento(evento) {
+  evento.preventDefault();
+  const valor = id => document.getElementById(id)?.value.trim() || '';
+  const datos = {
+    nombre: valor('fil-nombre'), material: valor('fil-material'), color: valor('fil-color'),
+    kg: Number(valor('fil-kg')) || 0,
+    kgAlerta: Number(valor('fil-alerta')) || 0.5,
+    costoKg: Number(valor('fil-costo')) || 0,
+    proveedor: valor('fil-proveedor')
+  };
+  try {
+    await DataStore.crearFilamento(datos);
+    evento.target.reset();
+    document.getElementById('fil-alerta').value = '0.5';
+    await recargar();
+    avisar(`✅ Filamento ${datos.nombre} agregado`, 'exito');
+  } catch (error) {
+    avisar(`❌ ${error.message}`, 'error');
   }
 }
 
@@ -966,7 +1293,11 @@ function configurarEventos() {
   document.getElementById('form-articulo').addEventListener('submit', manejarArticulo);
   document.getElementById('form-medicion').addEventListener('submit', manejarMedicion);
   document.getElementById('form-pedido').addEventListener('submit', crearPedido);
+  document.getElementById('form-cliente').addEventListener('submit', manejarCliente);
+  document.getElementById('form-filamento').addEventListener('submit', manejarFilamento);
   document.getElementById('art-nombre').addEventListener('input', actualizarPreviewId);
+
+  document.getElementById('med-filamento')?.addEventListener('change', actualizarStockFilamento);
 
   // Controles del cotizador (recalc local, sin viaje a la BD)
   ['cot-articulo', 'cot-cantidad', 'cot-factor', 'cot-gramos', 'cot-impresion', 'cot-preparacion']
@@ -999,7 +1330,10 @@ function configurarEventos() {
 
   const casillaFactura = document.getElementById('ped-factura');
   if (casillaFactura) {
-    casillaFactura.addEventListener('change', dibujarBorradorPedido);
+    casillaFactura.addEventListener('change', () => {
+      dibujarBorradorPedido();
+      alternarCamposFactura();
+    });
     casillaFactura.addEventListener('input', dibujarBorradorPedido);
   }
 
@@ -1072,6 +1406,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const hoy = hoyISO();
   document.getElementById('ped-fecha').value = hoy;
   document.getElementById('med-fecha').value = hoy;
+  document.getElementById('ped-fecha-factura').value = hoy;
+  alternarCamposFactura();
   document.getElementById('form-login').addEventListener('submit', manejarLogin);
 
   try {

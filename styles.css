@@ -353,6 +353,51 @@ input[type="number"] { text-align: right; }
   border-color: var(--borde);
 }
 
+/* ------------------------- campos fiscales y stock ------------------------ */
+
+.campos-factura {
+  margin-top: .9rem; padding: .9rem;
+  background: rgba(91, 110, 245, .06);
+  border: 1px solid rgba(91, 110, 245, .25);
+  border-radius: 10px;
+}
+.campos-factura[hidden] { display: none; }
+.stock-bajo { color: var(--rojo); font-weight: 700; }
+.stock-ok   { color: var(--verde); font-weight: 700; }
+#med-stock { display: block; margin-top: .25rem; font-size: .72rem; }
+
+/* --------------------------- modal confirmar ------------------------------ */
+
+.modal-confirmar {
+  position: fixed; inset: 0; z-index: 1100;
+  display: none; align-items: center; justify-content: center;
+  background: rgba(8, 11, 20, .82);
+  backdrop-filter: blur(6px);
+  padding: 1rem;
+}
+.modal-confirmar.visible { display: flex; }
+.tarjeta-modal {
+  width: min(100%, 430px);
+  background: var(--superficie);
+  border: 1px solid var(--borde);
+  border-radius: 16px;
+  padding: 1.8rem;
+  box-shadow: 0 28px 70px rgba(0, 0, 0, .6);
+  text-align: center;
+}
+.modal-icono {
+  width: 48px; height: 48px; margin: 0 auto .7rem;
+  display: grid; place-items: center;
+  font-size: 1.3rem;
+  background: rgba(245, 182, 66, .1);
+  border: 1px solid rgba(245, 182, 66, .35);
+  border-radius: 12px;
+}
+.tarjeta-modal h3 { font-size: 1.15rem; margin-bottom: .5rem; }
+.tarjeta-modal p { color: var(--texto-suave); font-size: .85rem; margin-bottom: 1.4rem; }
+.modal-acciones { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: center; }
+.modal-acciones .boton { flex: 1 1 auto; }
+
 /* --------------------------------- login --------------------------------- */
 
 .usuario-actual {

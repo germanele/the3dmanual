@@ -35,10 +35,18 @@ DROP FUNCTION IF EXISTS api_obtener_o_crear_articulo(TEXT) CASCADE;
 DROP FUNCTION IF EXISTS api_guardar_combo(TEXT, DATE, NUMERIC, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, JSONB) CASCADE;
 DROP FUNCTION IF EXISTS api_crear_pedido(TEXT, DATE, TEXT, JSONB) CASCADE;
 DROP FUNCTION IF EXISTS api_crear_pedido(TEXT, DATE, TEXT, JSONB, BOOLEAN) CASCADE;
+DROP FUNCTION IF EXISTS api_crear_pedido(TEXT, DATE, TEXT, JSONB, BOOLEAN, BIGINT, TEXT, TEXT, TEXT, DATE) CASCADE;
+DROP FUNCTION IF EXISTS api_guardar_medicion CASCADE;
+DROP FUNCTION IF EXISTS api_crear_filamento CASCADE;
+DROP FUNCTION IF EXISTS api_mover_filamento CASCADE;
+DROP FUNCTION IF EXISTS api_obtener_o_crear_cliente CASCADE;
 DROP FUNCTION IF EXISTS touch_actualizado_en() CASCADE;
 
-DROP TABLE IF EXISTS pedido_items      CASCADE;
-DROP TABLE IF EXISTS pedidos           CASCADE;
+DROP TABLE IF EXISTS movimientos_filamento CASCADE;
+DROP TABLE IF EXISTS filamentos            CASCADE;
+DROP TABLE IF EXISTS pedido_items          CASCADE;
+DROP TABLE IF EXISTS pedidos               CASCADE;
+DROP TABLE IF EXISTS clientes              CASCADE;
 DROP TABLE IF EXISTS combo_items       CASCADE;
 DROP TABLE IF EXISTS combos            CASCADE;
 DROP TABLE IF EXISTS registro_costos   CASCADE;
@@ -52,8 +60,9 @@ DROP TABLE IF EXISTS combos_guardados          CASCADE;
 DROP VIEW  IF EXISTS v_catalogo_articulos      CASCADE;
 DROP VIEW  IF EXISTS v_pedidos                 CASCADE;
 
-DROP TYPE IF EXISTS tipo_item_pedido CASCADE;
-DROP TYPE IF EXISTS estado_pedido    CASCADE;
+DROP TYPE IF EXISTS movimiento_filamento CASCADE;
+DROP TYPE IF EXISTS tipo_item_pedido     CASCADE;
+DROP TYPE IF EXISTS estado_pedido        CASCADE;
 
 -- -----------------------------------------------------------------------------
 -- 1. TIPOS CONTROLADOS
@@ -162,6 +171,55 @@ COMMENT ON COLUMN combo_items.precio_unitario IS
     'Snapshot del precio al guardar el combo: los cambios laterales no alteran el histórico.';
 
 -- -----------------------------------------------------------------------------
+-- 6.5 CLIENTES (entidad normalizada; `pedidos.cliente` queda como snapshot)
+-- -----------------------------------------------------------------------------
+CREATE TABLE clientes (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    nombre      TEXT NOT NULL UNIQUE,
+    rut         TEXT,
+    razon_social TEXT,
+    telefono    TEXT,
+    email       TEXT,
+    direccion   TEXT,
+    notas       TEXT,
+    creado_en   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_cliente_rut_vacio CHECK (rut IS NULL OR btrim(rut) <> '')
+);
+
+-- -----------------------------------------------------------------------------
+-- 6.6 FILAMENTO: inventario + movimientos (consumo lo descuenta una medición)
+-- -----------------------------------------------------------------------------
+CREATE TYPE movimiento_filamento AS ENUM ('entrada', 'consumo', 'ajuste');
+
+CREATE TABLE filamentos (
+    id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    codigo         TEXT GENERATED ALWAYS AS ('FIL-' || lpad(id::TEXT, 3, '0')) STORED NOT NULL UNIQUE,
+    nombre         TEXT NOT NULL,
+    material       TEXT NOT NULL,
+    color          TEXT NOT NULL,
+    kg_disponibles NUMERIC(10, 3) NOT NULL DEFAULT 0 CHECK (kg_disponibles >= 0),
+    kg_alerta      NUMERIC(10, 3) NOT NULL DEFAULT 0.5 CHECK (kg_alerta >= 0),
+    costo_kg       NUMERIC(14, 2) NOT NULL DEFAULT 0 CHECK (costo_kg >= 0),
+    proveedor      TEXT,
+    creado_en      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_filamento_material_color UNIQUE (material, color)
+);
+
+CREATE TABLE movimientos_filamento (
+    id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    filamento_id  BIGINT NOT NULL REFERENCES filamentos(id) ON DELETE RESTRICT,
+    fecha         DATE NOT NULL DEFAULT CURRENT_DATE,
+    tipo          movimiento_filamento NOT NULL,
+    kg            NUMERIC(10, 3) NOT NULL CHECK (kg <> 0),
+    motivo        TEXT,
+    medicion_id   BIGINT REFERENCES mediciones_slicer(id) ON DELETE SET NULL,
+    creado_en     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE movimientos_filamento IS
+    'Libro de inventario: entradas, consumos por medición del slicer y ajustes.';
+
+-- -----------------------------------------------------------------------------
 -- 7. PEDIDOS DE CLIENTES (código PED-XXX generado por la base de datos)
 -- -----------------------------------------------------------------------------
 CREATE TABLE pedidos (
@@ -169,11 +227,20 @@ CREATE TABLE pedidos (
     codigo          TEXT GENERATED ALWAYS AS ('PED-' || lpad(id::TEXT, 3, '0')) STORED NOT NULL UNIQUE,
     fecha           DATE NOT NULL,
     cliente         TEXT NOT NULL,
+    cliente_id      BIGINT REFERENCES clientes(id) ON DELETE SET NULL,
     estado          estado_pedido NOT NULL DEFAULT 'Pendiente',
     con_factura     BOOLEAN NOT NULL DEFAULT false,
+    rut             TEXT,
+    razon_social    TEXT,
+    numero_factura  TEXT,
+    fecha_factura   DATE,
     creado_en       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    actualizado_en  TIMESTAMPTZ NOT NULL DEFAULT now()
+    actualizado_en  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_numero_factura UNIQUE (numero_factura)
 );
+
+COMMENT ON COLUMN pedidos.cliente IS
+    'Snapshot del nombre al crear el pedido; el vínculo canónico es cliente_id.';
 
 CREATE TABLE pedido_items (
     id                  BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -202,6 +269,9 @@ CREATE INDEX idx_combo_items_combo     ON combo_items(combo_id);
 CREATE INDEX idx_pedido_items_pedido   ON pedido_items(pedido_id);
 CREATE INDEX idx_pedidos_fecha         ON pedidos(fecha DESC, id DESC);
 CREATE INDEX idx_pedidos_estado        ON pedidos(estado);
+CREATE INDEX idx_pedidos_cliente       ON pedidos(cliente_id);
+CREATE INDEX idx_pedidos_factura       ON pedidos(numero_factura);
+CREATE INDEX idx_mov_filamento_fil     ON movimientos_filamento(filamento_id, fecha DESC);
 
 -- -----------------------------------------------------------------------------
 -- 9. AUDITORÍA
@@ -243,7 +313,8 @@ SELECT c.*,
 FROM combos c;
 
 CREATE VIEW v_resumen_pedidos AS
-SELECT p.id, p.codigo, p.fecha, p.cliente, p.estado, p.con_factura,
+SELECT p.id, p.codigo, p.fecha, p.cliente, p.cliente_id, p.estado, p.con_factura,
+       p.rut, p.razon_social, p.numero_factura, p.fecha_factura,
        COUNT(pi.id) AS cant_items,
        COALESCE(SUM(pi.cantidad), 0) AS total_piezas,
        ROUND(COALESCE(SUM(pi.cantidad * pi.precio_unitario), 0), 2) AS subtotal_uyu,
@@ -253,7 +324,8 @@ SELECT p.id, p.codigo, p.fecha, p.cliente, p.estado, p.con_factura,
              CASE WHEN p.con_factura THEN 1.22 ELSE 1 END, 2) AS total_uyu
 FROM pedidos p
 LEFT JOIN pedido_items pi ON pi.pedido_id = p.id
-GROUP BY p.id, p.codigo, p.fecha, p.cliente, p.estado, p.con_factura;
+GROUP BY p.id, p.codigo, p.fecha, p.cliente, p.cliente_id, p.estado, p.con_factura,
+         p.rut, p.razon_social, p.numero_factura, p.fecha_factura;
 
 -- -----------------------------------------------------------------------------
 -- 10.5 AUTORIZACIÓN (se define antes que las RPC que la invocan)
@@ -314,6 +386,205 @@ BEGIN
     RETURN QUERY SELECT a.* FROM articulos a WHERE a.id = v_id;
 END $$;
 
+-- 11.1b Obtener o crear cliente; si existe, completa los datos fiscales que falten
+CREATE OR REPLACE FUNCTION api_obtener_o_crear_cliente(
+    p_nombre        TEXT,
+    p_rut           TEXT DEFAULT NULL,
+    p_razon_social  TEXT DEFAULT NULL,
+    p_telefono      TEXT DEFAULT NULL,
+    p_email         TEXT DEFAULT NULL
+)
+RETURNS SETOF clientes
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_id      BIGINT;
+    v_limpio  TEXT;
+BEGIN
+    IF NOT public.i3d_usuario_autorizado() THEN
+        RAISE EXCEPTION 'No autorizado';
+    END IF;
+
+    v_limpio := btrim(coalesce(p_nombre, ''));
+    IF v_limpio = '' THEN
+        RAISE EXCEPTION 'El nombre del cliente no puede estar vacío';
+    END IF;
+
+    INSERT INTO clientes(nombre, rut, razon_social, telefono, email)
+    VALUES (
+        v_limpio,
+        nullif(btrim(coalesce(p_rut, '')), ''),
+        nullif(btrim(coalesce(p_razon_social, '')), ''),
+        nullif(btrim(coalesce(p_telefono, '')), ''),
+        nullif(btrim(coalesce(p_email, '')), '')
+    )
+    ON CONFLICT (nombre) DO UPDATE SET
+        rut          = COALESCE(clientes.rut, EXCLUDED.rut),
+        razon_social = COALESCE(clientes.razon_social, EXCLUDED.razon_social),
+        telefono     = COALESCE(clientes.telefono, EXCLUDED.telefono),
+        email        = COALESCE(clientes.email, EXCLUDED.email)
+    RETURNING id INTO v_id;
+
+    RETURN QUERY SELECT c.* FROM clientes c WHERE c.id = v_id;
+END $$;
+
+-- 11.1c Guardar medición y, si se indicó filamento, descontar el consumo.
+-- El consumo se registra solo cuando la medición es NUEVA (no al editarla).
+CREATE OR REPLACE FUNCTION api_guardar_medicion(
+    p_fecha         DATE,
+    p_articulo_id   BIGINT,
+    p_cantidad      INTEGER,
+    p_gramos        NUMERIC,
+    p_impresion     NUMERIC,
+    p_preparacion   NUMERIC,
+    p_post          NUMERIC,
+    p_factor        NUMERIC,
+    p_filamento_id  BIGINT DEFAULT NULL
+)
+RETURNS BIGINT
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_id       BIGINT;
+    v_existe   BOOLEAN;
+    v_kg       NUMERIC(10, 3);
+    v_consumo  NUMERIC(10, 3);
+BEGIN
+    IF NOT public.i3d_usuario_autorizado() THEN
+        RAISE EXCEPTION 'No autorizado';
+    END IF;
+    IF coalesce(p_cantidad, 0) < 1 THEN
+        RAISE EXCEPTION 'La cantidad debe ser al menos 1';
+    END IF;
+    IF coalesce(p_gramos, 0) < 0 THEN
+        RAISE EXCEPTION 'Los gramos no pueden ser negativos';
+    END IF;
+
+    SELECT EXISTS (
+        SELECT 1 FROM mediciones_slicer
+        WHERE articulo_id = p_articulo_id AND cantidad = p_cantidad
+    ) INTO v_existe;
+
+    INSERT INTO mediciones_slicer(fecha, articulo_id, cantidad, gramos_lote,
+        horas_impresion_lote, horas_preparacion_lote, horas_postprocesado_unit, factor)
+    VALUES (p_fecha, p_articulo_id, p_cantidad, p_gramos, p_impresion,
+            p_preparacion, p_post, p_factor)
+    ON CONFLICT (articulo_id, cantidad) DO UPDATE SET
+        fecha                    = EXCLUDED.fecha,
+        gramos_lote              = EXCLUDED.gramos_lote,
+        horas_impresion_lote     = EXCLUDED.horas_impresion_lote,
+        horas_preparacion_lote   = EXCLUDED.horas_preparacion_lote,
+        horas_postprocesado_unit = EXCLUDED.horas_postprocesado_unit,
+        factor                   = EXCLUDED.factor
+    RETURNING id INTO v_id;
+
+    IF (NOT v_existe) AND p_filamento_id IS NOT NULL AND coalesce(p_gramos, 0) > 0 THEN
+        v_consumo := ROUND(p_gramos / 1000, 3);
+
+        SELECT kg_disponibles INTO v_kg FROM filamentos WHERE id = p_filamento_id;
+        IF v_kg IS NULL THEN
+            RAISE EXCEPTION 'No existe el filamento indicado';
+        END IF;
+        IF v_kg < v_consumo THEN
+            RAISE EXCEPTION 'Stock insuficiente: hay % kg y la medición consume % kg', v_kg, v_consumo;
+        END IF;
+
+        INSERT INTO movimientos_filamento(filamento_id, fecha, tipo, kg, motivo, medicion_id)
+        VALUES (p_filamento_id, p_fecha, 'consumo', -v_consumo,
+                'Consumo por medición del slicer', v_id);
+
+        UPDATE filamentos
+        SET kg_disponibles = ROUND(kg_disponibles - v_consumo, 3)
+        WHERE id = p_filamento_id;
+    END IF;
+
+    RETURN v_id;
+END $$;
+
+-- 11.1d Dar de alta un filamento con su stock inicial (y su movimiento de entrada)
+CREATE OR REPLACE FUNCTION api_crear_filamento(
+    p_nombre      TEXT,
+    p_material    TEXT,
+    p_color       TEXT,
+    p_kg_inicial  NUMERIC DEFAULT 0,
+    p_kg_alerta   NUMERIC DEFAULT 0.5,
+    p_costo_kg    NUMERIC DEFAULT 0,
+    p_proveedor   TEXT DEFAULT NULL
+)
+RETURNS BIGINT
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_id BIGINT;
+BEGIN
+    IF NOT public.i3d_usuario_autorizado() THEN
+        RAISE EXCEPTION 'No autorizado';
+    END IF;
+    IF btrim(coalesce(p_nombre, '')) = '' OR btrim(coalesce(p_material, '')) = ''
+       OR btrim(coalesce(p_color, '')) = '' THEN
+        RAISE EXCEPTION 'Nombre, material y color son obligatorios';
+    END IF;
+    IF coalesce(p_kg_inicial, 0) < 0 THEN
+        RAISE EXCEPTION 'El stock inicial no puede ser negativo';
+    END IF;
+
+    INSERT INTO filamentos(nombre, material, color, kg_disponibles, kg_alerta,
+                           costo_kg, proveedor)
+    VALUES (btrim(p_nombre), btrim(p_material), btrim(p_color),
+            ROUND(coalesce(p_kg_inicial, 0), 3), ROUND(coalesce(p_kg_alerta, 0.5), 3),
+            coalesce(p_costo_kg, 0), nullif(btrim(coalesce(p_proveedor, '')), ''))
+    RETURNING id INTO v_id;
+
+    IF coalesce(p_kg_inicial, 0) > 0 THEN
+        INSERT INTO movimientos_filamento(filamento_id, fecha, tipo, kg, motivo)
+        VALUES (v_id, CURRENT_DATE, 'entrada', ROUND(p_kg_inicial, 3), 'Stock inicial');
+    END IF;
+
+    RETURN v_id;
+END $$;
+
+-- 11.1e Registrar entrada o ajuste de stock (p_tipo TEXT para evitar acoplamiento al enum)
+CREATE OR REPLACE FUNCTION api_mover_filamento(
+    p_filamento_id  BIGINT,
+    p_tipo          TEXT,
+    p_kg            NUMERIC,
+    p_motivo        TEXT DEFAULT NULL
+)
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_kg    NUMERIC(10, 3);
+    v_delta NUMERIC(10, 3);
+BEGIN
+    IF NOT public.i3d_usuario_autorizado() THEN
+        RAISE EXCEPTION 'No autorizado';
+    END IF;
+    IF coalesce(p_kg, 0) = 0 THEN
+        RAISE EXCEPTION 'Ingresá una cantidad de kg distinta de cero';
+    END IF;
+    IF p_tipo NOT IN ('entrada', 'ajuste') THEN
+        RAISE EXCEPTION 'Tipo de movimiento inválido';
+    END IF;
+
+    SELECT kg_disponibles INTO v_kg FROM filamentos WHERE id = p_filamento_id FOR UPDATE;
+    IF v_kg IS NULL THEN
+        RAISE EXCEPTION 'No existe el filamento indicado';
+    END IF;
+
+    IF p_tipo = 'entrada' AND p_kg <= 0 THEN
+        RAISE EXCEPTION 'Una entrada debe ser positiva';
+    END IF;
+
+    v_delta := ROUND(p_kg, 3);
+    IF v_kg + v_delta < 0 THEN
+        RAISE EXCEPTION 'El movimiento dejaría stock negativo';
+    END IF;
+
+    UPDATE filamentos
+    SET kg_disponibles = ROUND(kg_disponibles + v_delta, 3)
+    WHERE id = p_filamento_id;
+
+    INSERT INTO movimientos_filamento(filamento_id, fecha, tipo, kg, motivo)
+    VALUES (p_filamento_id, CURRENT_DATE, p_tipo::movimiento_filamento, v_delta, p_motivo);
+END $$;
+
 -- 11.2 Guardar un combo completo (cabecera + ítems) en una sola transacción
 CREATE OR REPLACE FUNCTION api_guardar_combo(
     p_nombre        TEXT,
@@ -365,11 +636,16 @@ END $$;
 
 -- 11.3 Crear un pedido completo (cabecera + ítems) en una sola transacción
 CREATE OR REPLACE FUNCTION api_crear_pedido(
-    p_cliente      TEXT,
-    p_fecha        DATE,
-    p_estado       TEXT,
-    p_items        JSONB,
-    p_con_factura  BOOLEAN DEFAULT false
+    p_cliente         TEXT,
+    p_fecha           DATE,
+    p_estado          TEXT,
+    p_items           JSONB,
+    p_con_factura     BOOLEAN DEFAULT false,
+    p_cliente_id      BIGINT DEFAULT NULL,
+    p_rut             TEXT DEFAULT NULL,
+    p_razon_social    TEXT DEFAULT NULL,
+    p_numero_factura  TEXT DEFAULT NULL,
+    p_fecha_factura   DATE DEFAULT NULL
 )
 RETURNS TEXT
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
@@ -391,9 +667,18 @@ BEGIN
     IF jsonb_array_length(coalesce(p_items, '[]'::jsonb)) = 0 THEN
         RAISE EXCEPTION 'El pedido debe tener al menos un ítem';
     END IF;
+    IF coalesce(p_con_factura, false) AND btrim(coalesce(p_rut, '')) = '' THEN
+        RAISE EXCEPTION 'Un pedido con factura debe tener RUT';
+    END IF;
 
-    INSERT INTO pedidos(cliente, fecha, estado, con_factura)
-    VALUES (btrim(p_cliente), p_fecha, v_estado, coalesce(p_con_factura, false))
+    INSERT INTO pedidos(cliente, cliente_id, fecha, estado, con_factura,
+                        rut, razon_social, numero_factura, fecha_factura)
+    VALUES (btrim(p_cliente), p_cliente_id, p_fecha, v_estado,
+            coalesce(p_con_factura, false),
+            nullif(btrim(coalesce(p_rut, '')), ''),
+            nullif(btrim(coalesce(p_razon_social, '')), ''),
+            nullif(btrim(coalesce(p_numero_factura, '')), ''),
+            p_fecha_factura)
     RETURNING id, codigo INTO v_id, v_codigo;
 
     FOR v_it IN SELECT * FROM jsonb_array_elements(p_items) LOOP
@@ -424,6 +709,9 @@ ALTER TABLE combos            ENABLE ROW LEVEL SECURITY;
 ALTER TABLE combo_items       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pedidos           ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pedido_items      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE clientes          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE filamentos        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE movimientos_filamento ENABLE ROW LEVEL SECURITY;
 ALTER TABLE usuarios_autorizados ENABLE ROW LEVEL SECURITY;
 
 -- El usuario solo ve su propia fila de autorización.
@@ -438,7 +726,8 @@ DECLARE t TEXT;
 BEGIN
     FOREACH t IN ARRAY ARRAY[
         'parametros_base','articulos','mediciones_slicer','registro_costos',
-        'combos','combo_items','pedidos','pedido_items'
+        'combos','combo_items','pedidos','pedido_items',
+        'clientes','filamentos','movimientos_filamento'
     ] LOOP
         EXECUTE format('DROP POLICY IF EXISTS "i3d_acceso_publico" ON %I', t);
         EXECUTE format('DROP POLICY IF EXISTS "i3d_acceso_autenticado" ON %I', t);
@@ -454,12 +743,14 @@ END $$;
 -- Sin permisos para anon: la publishable key ya no alcanza para leer nada.
 REVOKE ALL ON TABLE
     parametros_base, articulos, mediciones_slicer, registro_costos,
-    combos, combo_items, pedidos, pedido_items, usuarios_autorizados
+    combos, combo_items, pedidos, pedido_items,
+    clientes, filamentos, movimientos_filamento, usuarios_autorizados
 FROM anon;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
     parametros_base, articulos, mediciones_slicer, registro_costos,
-    combos, combo_items, pedidos, pedido_items
+    combos, combo_items, pedidos, pedido_items,
+    clientes, filamentos, movimientos_filamento
 TO authenticated;
 GRANT SELECT ON TABLE usuarios_autorizados TO authenticated;
 GRANT EXECUTE ON FUNCTION public.i3d_usuario_autorizado() TO authenticated;
@@ -467,13 +758,22 @@ GRANT EXECUTE ON FUNCTION public.i3d_usuario_autorizado() TO authenticated;
 REVOKE ALL ON v_catalogo_articulos, v_combos_detalle, v_resumen_pedidos FROM anon;
 GRANT SELECT ON v_catalogo_articulos, v_combos_detalle, v_resumen_pedidos TO authenticated;
 
-REVOKE ALL ON FUNCTION api_obtener_o_crear_articulo(TEXT) FROM anon;
-REVOKE ALL ON FUNCTION api_guardar_combo(TEXT, DATE, NUMERIC, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, JSONB) FROM anon;
-REVOKE ALL ON FUNCTION api_crear_pedido(TEXT, DATE, TEXT, JSONB, BOOLEAN) FROM anon;
+-- Se usa la forma sin lista de argumentos para cubrir todas las sobrecargas.
+REVOKE ALL ON FUNCTION api_obtener_o_crear_articulo FROM anon;
+REVOKE ALL ON FUNCTION api_obtener_o_crear_cliente FROM anon;
+REVOKE ALL ON FUNCTION api_guardar_medicion FROM anon;
+REVOKE ALL ON FUNCTION api_crear_filamento FROM anon;
+REVOKE ALL ON FUNCTION api_mover_filamento FROM anon;
+REVOKE ALL ON FUNCTION api_guardar_combo FROM anon;
+REVOKE ALL ON FUNCTION api_crear_pedido FROM anon;
 
-GRANT EXECUTE ON FUNCTION api_obtener_o_crear_articulo(TEXT) TO authenticated;
-GRANT EXECUTE ON FUNCTION api_guardar_combo(TEXT, DATE, NUMERIC, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, JSONB) TO authenticated;
-GRANT EXECUTE ON FUNCTION api_crear_pedido(TEXT, DATE, TEXT, JSONB, BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION api_obtener_o_crear_articulo TO authenticated;
+GRANT EXECUTE ON FUNCTION api_obtener_o_crear_cliente TO authenticated;
+GRANT EXECUTE ON FUNCTION api_guardar_medicion TO authenticated;
+GRANT EXECUTE ON FUNCTION api_crear_filamento TO authenticated;
+GRANT EXECUTE ON FUNCTION api_mover_filamento TO authenticated;
+GRANT EXECUTE ON FUNCTION api_guardar_combo TO authenticated;
+GRANT EXECUTE ON FUNCTION api_crear_pedido TO authenticated;
 
 -- -----------------------------------------------------------------------------
 -- 13. DATOS INICIALES (seed idempotente)
@@ -496,6 +796,29 @@ INSERT INTO parametros_base (clave, etiqueta, valor, unidad, base, notas) VALUES
 ('cotizacion_dolar',         'Cotización dólar (venta)',     41.5000, '$ UYU / USD', 'UYU',
  'Tipo de cambio de referencia editable')
 ON CONFLICT (clave) DO NOTHING;
+
+-- 13.1b Clientes de ejemplo
+INSERT INTO clientes (nombre, rut, razon_social, telefono, email) VALUES
+('Juan Pérez',         '1.234.567-8', 'Juan Pérez',        '091 123 456', 'juan@example.com'),
+('Lucía Silva',        '2.345.678-9', 'Lucía Silva',       '092 234 567', 'lucia@example.com'),
+('Martín Rodríguez',   '3.456.789-1', 'Martín Rodríguez',  '093 345 678', 'martin@example.com'),
+('Valentina Gómez',    '4.567.890-2', 'Valentina Gómez',   '094 456 789', 'valentina@example.com'),
+('Tech Solutions UY',  '5.678.901-3', 'Tech Solutions SRL','095 567 890', 'contacto@techuy.com'),
+('Estudio Creativo',   '6.789.012-4', 'Estudio Creativo',  '096 678 901', 'hola@estudiocreativo.uy')
+ON CONFLICT (nombre) DO NOTHING;
+
+-- 13.1c Filamentos de ejemplo
+INSERT INTO filamentos (nombre, material, color, kg_disponibles, kg_alerta, costo_kg, proveedor)
+VALUES
+('PLA Negro',   'PLA',  'Negro',  2.400, 0.500, 18.00, 'Local 3D'),
+('PLA Blanco',  'PLA',  'Blanco', 1.100, 0.500, 18.00, 'Local 3D'),
+('PETG Azul',   'PETG', 'Azul',   0.350, 0.500, 22.50, 'Impresora UY')
+ON CONFLICT (material, color) DO NOTHING;
+
+INSERT INTO movimientos_filamento (filamento_id, fecha, tipo, kg, motivo)
+SELECT f.id, CURRENT_DATE, 'entrada', f.kg_disponibles, 'Stock inicial'
+FROM filamentos f
+WHERE NOT EXISTS (SELECT 1 FROM movimientos_filamento m WHERE m.filamento_id = f.id);
 
 -- 13.2 Artículos (los códigos ART-001..006 se generan solos)
 INSERT INTO articulos (nombre) VALUES
@@ -571,14 +894,18 @@ WHERE NOT EXISTS (
     WHERE ci.combo_id = c.id AND ci.articulo_id = a.id
 );
 
--- 13.6 Pedidos
-INSERT INTO pedidos (fecha, cliente, estado) VALUES
-(DATE '2024-05-18', 'Juan Pérez',         'Entregado'),
-(DATE '2024-05-20', 'Lucía Silva',        'En Producción'),
-(DATE '2024-05-22', 'Martín Rodríguez',   'Pendiente'),
-(DATE '2024-05-25', 'Valentina Gómez',    'Listo para Entrega'),
-(DATE '2024-05-28', 'Tech Solutions UY',  'Entregado'),
-(DATE '2024-05-30', 'Estudio Creativo',   'En Producción')
+-- 13.6 Pedidos (vinculados al cliente por nombre)
+INSERT INTO pedidos (fecha, cliente, cliente_id, estado)
+SELECT v.fecha, v.cliente, c.id, v.estado
+FROM (VALUES
+ (DATE '2024-05-18', 'Juan Pérez',        'Entregado'::estado_pedido),
+ (DATE '2024-05-20', 'Lucía Silva',       'En Producción'::estado_pedido),
+ (DATE '2024-05-22', 'Martín Rodríguez',  'Pendiente'::estado_pedido),
+ (DATE '2024-05-25', 'Valentina Gómez',   'Listo para Entrega'::estado_pedido),
+ (DATE '2024-05-28', 'Tech Solutions UY', 'Entregado'::estado_pedido),
+ (DATE '2024-05-30', 'Estudio Creativo',  'En Producción'::estado_pedido)
+) AS v(fecha, cliente, estado)
+JOIN clientes c ON c.nombre = v.cliente
 ON CONFLICT (codigo) DO NOTHING;
 
 INSERT INTO pedido_items (pedido_id, tipo, articulo_id, descripcion, cantidad, precio_unitario)

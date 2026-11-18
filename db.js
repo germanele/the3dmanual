@@ -96,9 +96,46 @@ const DataStore = (() => {
     codigo: p.codigo,
     fecha: p.fecha,
     cliente: p.cliente,
+    clienteId: p.cliente_id == null ? null : Number(p.cliente_id),
     estado: p.estado,
     conFactura: Boolean(p.con_factura),
+    rut: p.rut || '',
+    razonSocial: p.razon_social || '',
+    numeroFactura: p.numero_factura || '',
+    fechaFactura: p.fecha_factura || '',
     items: itemsPorPedido.get(Number(p.id)) || []
+  });
+
+  const aCliente = c => ({
+    id: Number(c.id),
+    nombre: c.nombre,
+    rut: c.rut || '',
+    razonSocial: c.razon_social || '',
+    telefono: c.telefono || '',
+    email: c.email || '',
+    direccion: c.direccion || '',
+    notas: c.notas || ''
+  });
+
+  const aFilamento = f => ({
+    id: Number(f.id),
+    codigo: f.codigo,
+    nombre: f.nombre,
+    material: f.material,
+    color: f.color,
+    kg: Number(f.kg_disponibles),
+    kgAlerta: Number(f.kg_alerta),
+    costoKg: Number(f.costo_kg),
+    proveedor: f.proveedor || ''
+  });
+
+  const aMovimiento = m => ({
+    id: Number(m.id),
+    filamentoId: Number(m.filamento_id),
+    fecha: m.fecha,
+    tipo: m.tipo,
+    kg: Number(m.kg),
+    motivo: m.motivo || ''
   });
 
   /* ------------------------------ ciclo de vida --------------------------- */
@@ -170,17 +207,22 @@ const DataStore = (() => {
       c.from('combos').select('*').order('fecha', { ascending: false }).order('id', { ascending: false }),
       c.from('combo_items').select('*').order('id'),
       c.from('pedidos').select('*').order('fecha', { ascending: false }).order('id', { ascending: false }),
-      c.from('pedido_items').select('*').order('id')
+      c.from('pedido_items').select('*').order('id'),
+      c.from('clientes').select('*').order('nombre'),
+      c.from('filamentos').select('*').order('codigo'),
+      c.from('movimientos_filamento').select('*').order('fecha', { ascending: false })
+        .order('id', { ascending: false }).limit(30)
     ]);
 
     const nombres = [
       'parámetros base', 'artículos', 'mediciones', 'registro de costos',
-      'combos', 'ítems de combo', 'pedidos', 'ítems de pedido'
+      'combos', 'ítems de combo', 'pedidos', 'ítems de pedido',
+      'clientes', 'filamentos', 'movimientos de filamento'
     ];
     consultas.forEach((res, i) => verificar(res.error, `Error cargando ${nombres[i]}`));
 
-    const [params, arts, meds, reg, combos, comboItems, pedidos, pedItems] =
-      consultas.map(r => r.data || []);
+    const [params, arts, meds, reg, combos, comboItems, pedidos, pedItems,
+           clientes, filamentos, movimientos] = consultas.map(r => r.data || []);
 
     const mapaArticulos = new Map(arts.map(a => [Number(a.id), aArticulo(a)]));
 
@@ -204,7 +246,10 @@ const DataStore = (() => {
       mediciones: meds.map(m => aMedicion(m, mapaArticulos)),
       registro: reg.map(r => aRegistro(r, mapaArticulos)),
       combos: combos.map(c => aCombo(c, itemsCombo)),
-      pedidos: pedidos.map(p => aPedido(p, itemsPedido))
+      pedidos: pedidos.map(p => aPedido(p, itemsPedido)),
+      clientes: clientes.map(aCliente),
+      filamentos: filamentos.map(aFilamento),
+      movimientos: movimientos.map(aMovimiento)
     };
   }
 
@@ -246,19 +291,19 @@ const DataStore = (() => {
 
   /* ------------------------ mediciones del slicer ------------------------- */
 
+  /** Guarda la medición y descuenta el filamento elegido en una transacción. */
   async function guardarMedicion(m) {
-    const payload = {
-      fecha: m.fecha,
-      articulo_id: m.articuloId,
-      cantidad: m.cantidad,
-      gramos_lote: m.gramos,
-      horas_impresion_lote: m.impresionH,
-      horas_preparacion_lote: m.preparacionH,
-      horas_postprocesado_unit: m.postUnitH,
-      factor: m.factor
-    };
-    const { error } = await bd().from('mediciones_slicer')
-      .upsert(payload, { onConflict: 'articulo_id,cantidad' });
+    const { error } = await bd().rpc('api_guardar_medicion', {
+      p_fecha: m.fecha,
+      p_articulo_id: m.articuloId,
+      p_cantidad: m.cantidad,
+      p_gramos: m.gramos,
+      p_impresion: m.impresionH,
+      p_preparacion: m.preparacionH,
+      p_post: m.postUnitH,
+      p_factor: m.factor,
+      p_filamento_id: m.filamentoId || null
+    });
     verificar(error, 'No se pudo guardar la medición');
   }
 
@@ -310,6 +355,70 @@ const DataStore = (() => {
     verificar(error, 'No se pudo eliminar el combo');
   }
 
+  /* ------------------------------- clientes ------------------------------- */
+
+  /** Obtiene o crea el cliente y devuelve su id (y datos fiscales actualizados). */
+  async function obtenerOCrearCliente(cliente) {
+    const { data, error } = await bd().rpc('api_obtener_o_crear_cliente', {
+      p_nombre: cliente.nombre,
+      p_rut: cliente.rut || null,
+      p_razon_social: cliente.razonSocial || null,
+      p_telefono: cliente.telefono || null,
+      p_email: cliente.email || null
+    });
+    verificar(error, 'No se pudo guardar el cliente');
+    if (!data || !data.length) throw new Error('La BD no devolvió el cliente');
+    return aCliente(data[0]);
+  }
+
+  async function actualizarCliente(id, campos) {
+    const payload = {};
+    const columnas = {
+      nombre: 'nombre', rut: 'rut', razonSocial: 'razon_social',
+      telefono: 'telefono', email: 'email', direccion: 'direccion', notas: 'notas'
+    };
+    for (const [clave, columna] of Object.entries(columnas)) {
+      if (clave in campos) payload[columna] = campos[clave] || null;
+    }
+    const { error } = await bd().from('clientes').update(payload).eq('id', id);
+    verificar(error, 'No se pudo actualizar el cliente');
+  }
+
+  async function eliminarCliente(id) {
+    const { error } = await bd().from('clientes').delete().eq('id', id);
+    verificar(error, 'No se pudo eliminar el cliente (¿tiene pedidos vinculados?)');
+  }
+
+  /* ------------------------------ filamentos ------------------------------ */
+
+  async function crearFilamento(f) {
+    const { error } = await bd().rpc('api_crear_filamento', {
+      p_nombre: f.nombre,
+      p_material: f.material,
+      p_color: f.color,
+      p_kg_inicial: f.kg,
+      p_kg_alerta: f.kgAlerta,
+      p_costo_kg: f.costoKg,
+      p_proveedor: f.proveedor || null
+    });
+    verificar(error, 'No se pudo crear el filamento');
+  }
+
+  async function moverFilamento(id, tipo, kg, motivo) {
+    const { error } = await bd().rpc('api_mover_filamento', {
+      p_filamento_id: id,
+      p_tipo: tipo,
+      p_kg: kg,
+      p_motivo: motivo || null
+    });
+    verificar(error, 'No se pudo registrar el movimiento de filamento');
+  }
+
+  async function eliminarFilamento(id) {
+    const { error } = await bd().from('filamentos').delete().eq('id', id);
+    verificar(error, 'No se pudo eliminar el filamento (tiene movimientos registrados)');
+  }
+
   /* ------------------------------- pedidos -------------------------------- */
 
   /** Inserta pedido + ítems en una única transacción. Devuelve el código PED-XXX. */
@@ -319,10 +428,27 @@ const DataStore = (() => {
       p_fecha: pedido.fecha,
       p_estado: pedido.estado,
       p_items: items,
-      p_con_factura: Boolean(pedido.conFactura)
+      p_con_factura: Boolean(pedido.conFactura),
+      p_cliente_id: pedido.clienteId || null,
+      p_rut: pedido.rut || null,
+      p_razon_social: pedido.razonSocial || null,
+      p_numero_factura: pedido.numeroFactura || null,
+      p_fecha_factura: pedido.fechaFactura || null
     });
     verificar(error, 'No se pudo crear el pedido');
     return data;
+  }
+
+  async function actualizarDatosFiscales(id, campos) {
+    const payload = {};
+    for (const [clave, columna] of Object.entries({
+      rut: 'rut', razonSocial: 'razon_social',
+      numeroFactura: 'numero_factura', fechaFactura: 'fecha_factura'
+    })) {
+      if (clave in campos) payload[columna] = campos[clave] || null;
+    }
+    const { error } = await bd().from('pedidos').update(payload).eq('id', id);
+    verificar(error, 'No se pudo actualizar la factura');
   }
 
   async function cambiarFacturaPedido(id, conFactura) {
@@ -379,10 +505,17 @@ const DataStore = (() => {
     guardarMedicion,
     actualizarMedicion,
     eliminarMedicion,
+    obtenerOCrearCliente,
+    actualizarCliente,
+    eliminarCliente,
+    crearFilamento,
+    moverFilamento,
+    eliminarFilamento,
     guardarCombo,
     renombrarCombo,
     eliminarCombo,
     crearPedido,
+    actualizarDatosFiscales,
     cambiarFacturaPedido,
     cambiarEstadoPedido,
     eliminarPedido,
