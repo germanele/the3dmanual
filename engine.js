@@ -1,545 +1,548 @@
 /**
- * ============================================================================
- * MOTOR DE CÁLCULO Y LÓGICA DE NEGOCIO (Conversión exacta de fórmulas Excel)
- * Gestión Impresión 3D - Costos y Combos (Uruguay)
- * ============================================================================
+ * =============================================================================
+ * MOTOR DE CÁLCULO — v2
+ * Costos, escalas, cotizaciones y combos para impresión 3D (Uruguay)
+ * -----------------------------------------------------------------------------
+ * Implementación propia de las fórmulas de negocio. Mantiene la semántica:
+ * redondeo estilo Excel, tiempos hh:mm, prorrateo por lote, semáforo N=1,
+ * comparativa de 1 unidad, punto de equilibrio y optimización de combos.
+ * =============================================================================
  */
 
-const Engine3D = (() => {
-  function excelRound(val, decimals = 2) {
-    if (!Number.isFinite(val)) return 0;
-    const factor = Math.pow(10, decimals);
-    if (val >= 0) {
-      return Math.floor(val * factor + 0.5 + 1e-12) / factor;
-    }
-    return Math.ceil(val * factor - 0.5 - 1e-12) / factor;
+const Calc = (() => {
+  'use strict';
+
+  const PARAMETROS_POR_DEFECTO = {
+    energia_kwh: 11,
+    desgaste_maquina_h: 10,
+    tiempo_manual_h: 250,
+    precio_plastico_usd_kg: 15,
+    consumo_maquina_w: 110,
+    factor_defecto: 2.5,
+    cotizacion_dolar: 41.5
+  };
+
+  const ESCALAS_OBJETIVO = [1, 3, 5, 10, 20];
+
+  /* ---------------------------- utilidades -------------------------------- */
+
+  /** Redondeo "Excel" (half-up simétrico, tolerando error de coma flotante). */
+  function round(valor, decimales = 2) {
+    if (!Number.isFinite(valor)) return 0;
+    const factor = Math.pow(10, decimales);
+    return valor >= 0
+      ? Math.floor(valor * factor + 0.5 + 1e-12) / factor
+      : Math.ceil(valor * factor - 0.5 - 1e-12) / factor;
   }
 
-  function excelRoundUp(val, decimals = 0) {
-    if (!Number.isFinite(val)) return 0;
-    const factor = Math.pow(10, decimals);
-    if (val >= 0) {
-      return Math.ceil(val * factor - 1e-12) / factor;
-    }
-    return Math.floor(val * factor + 1e-12) / factor;
+  /** REDONDEAR ARRIBA estilo Excel, usado para el punto de equilibrio. */
+  function roundUp(valor, decimales = 0) {
+    if (!Number.isFinite(valor)) return 0;
+    const factor = Math.pow(10, decimales);
+    return valor >= 0
+      ? Math.ceil(valor * factor - 1e-12) / factor
+      : Math.floor(valor * factor + 1e-12) / factor;
   }
 
-  function normStr(s) {
-    return String(s || '').trim().toLowerCase();
-  }
+  const normalizar = valor => String(valor ?? '').trim().toLowerCase();
 
-  function hoursToHHMM(hours) {
-    if (!Number.isFinite(hours) || hours <= 0) return '00:00';
-    const totalMinutes = Math.round(hours * 60);
-    const hh = Math.floor(totalMinutes / 60);
-    const mm = totalMinutes % 60;
+  /** Horas decimales → "hh:mm" (sin tope de horas: 390 h → "390:00"). */
+  function aReloj(horas) {
+    if (!Number.isFinite(horas) || horas <= 0) return '00:00';
+    const minutos = Math.round(horas * 60);
+    const hh = Math.floor(minutos / 60);
+    const mm = minutos % 60;
     return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
   }
 
-  function hhmmToHours(str) {
-    if (str === null || str === undefined) return null;
-    const clean = String(str).trim();
-    if (!clean) return null;
+  /** "hh:mm" o "hhmm" → horas decimales. Devuelve null si está vacío, NaN si es inválido. */
+  function aHoras(texto) {
+    if (texto === null || texto === undefined) return null;
+    const limpio = String(texto).trim();
+    if (!limpio) return null;
 
-    const match = clean.match(/^(\d+):([0-5]?\d)$/);
-    if (match) {
-      const hh = parseInt(match[1], 10);
-      const mm = parseInt(match[2], 10);
-      if (mm > 59) return NaN;
-      return hh + (mm / 60.0);
+    const conDosPuntos = limpio.match(/^(\d+):([0-5]?\d)$/);
+    if (conDosPuntos) {
+      const hh = parseInt(conDosPuntos[1], 10);
+      const mm = parseInt(conDosPuntos[2], 10);
+      return mm > 59 ? NaN : hh + mm / 60;
     }
 
-    const compact = clean.match(/^(\d{2,4})([0-5]\d)$/);
-    if (compact && !clean.includes('.') && !clean.includes(',')) {
-      const hh = parseInt(compact[1], 10);
-      const mm = parseInt(compact[2], 10);
-      if (mm <= 59) return hh + (mm / 60.0);
+    const compacto = limpio.match(/^(\d{2,4})([0-5]\d)$/);
+    if (compacto && !limpio.includes('.') && !limpio.includes(',')) {
+      return parseInt(compacto[1], 10) + parseInt(compacto[2], 10) / 60;
     }
 
     return NaN;
   }
 
-  function normalizeHHMM(str) {
-    const h = hhmmToHours(str);
+  function normalizarReloj(texto) {
+    const h = aHoras(texto);
     if (h === null) return '';
     if (!Number.isFinite(h) || h < 0) return null;
-    return hoursToHHMM(h);
+    return aReloj(h);
   }
 
-  function mapParametros(paramRows) {
-    const p = {
-      energia_kwh: 11.0,
-      desgaste_maquina_h: 10.0,
-      tiempo_manual_h: 250.0,
-      precio_plastico_usd_kg: 15.0,
-      consumo_maquina_w: 110.0,
-      factor_defecto: 2.5,
-      cotizacion_dolar: 41.5
-    };
-    for (const row of paramRows) {
-      if (row.clave in p) {
-        p[row.clave] = Number(row.valor);
+  /** Convierte las filas de parametros_base en un objeto de parámetros numéricos. */
+  function leerParametros(filas) {
+    const params = { ...PARAMETROS_POR_DEFECTO };
+    for (const fila of filas || []) {
+      if (Object.prototype.hasOwnProperty.call(params, fila.clave)) {
+        params[fila.clave] = Number(fila.valor);
       }
     }
-    return p;
+    return params;
   }
 
-  function calcularCostoBaseUnitario(cantidad, gramosLote, impLoteH, prepLoteH, postUnitH, params) {
+  /** Compara dos artículos por id numérico o, en su defecto, por código. */
+  function mismoArticulo(entidad, clave) {
+    if (clave === null || clave === undefined || clave === '') return false;
+    const claveTxt = String(clave);
+    if (entidad.articuloId != null && /^\d+$/.test(claveTxt)) {
+      return String(entidad.articuloId) === claveTxt;
+    }
+    return normalizar(entidad.codigo) === normalizar(claveTxt);
+  }
+
+  /* --------------------------- costos base -------------------------------- */
+
+  /**
+   * Costo base unitario = plástico + electricidad + desgaste + mano de obra.
+   * Los tiempos de lote se prorratean entre las unidades.
+   */
+  function costoUnitario(cantidad, gramosLote, impresionLoteH, preparacionLoteH, postUnitH, p) {
     if (!cantidad || cantidad < 1) return 0;
+
     const gramosUnit = gramosLote / cantidad;
-    const impUnitH = impLoteH / cantidad;
-    const prepUnitH = prepLoteH / cantidad;
+    const impUnit = impresionLoteH / cantidad;
+    const prepUnit = preparacionLoteH / cantidad;
 
-    const costoPlastico = (gramosUnit / 1000.0) * params.precio_plastico_usd_kg * params.cotizacion_dolar;
-    const costoElectricidad = impUnitH * (params.consumo_maquina_w / 1000.0) * params.energia_kwh;
-    const costoDesgaste = impUnitH * params.desgaste_maquina_h;
-    const costoManoObra = (prepUnitH + postUnitH) * params.tiempo_manual_h;
+    const plastico = (gramosUnit / 1000) * p.precio_plastico_usd_kg * p.cotizacion_dolar;
+    const electricidad = impUnit * (p.consumo_maquina_w / 1000) * p.energia_kwh;
+    const desgaste = impUnit * p.desgaste_maquina_h;
+    const manoObra = (prepUnit + postUnitH) * p.tiempo_manual_h;
 
-    return excelRound(costoPlastico + costoElectricidad + costoDesgaste + costoManoObra, 2);
+    return round(plastico + electricidad + desgaste + manoObra, 2);
   }
 
-  function resolverDatosArticulo(idArticulo, cantidad, escalasReales, manualOverride = null) {
-    const idNorm = normStr(idArticulo);
+  /**
+   * Resuelve los datos activos para un (artículo, cantidad):
+   *   1) medición exacta → real
+   *   2) carga manual del cotizador → real (aún no guardada)
+   *   3) medición de otra cantidad → estimado lineal (preparación no se escala)
+   *   4) sin historial → ceros
+   */
+  function resolverMedicion(articuloClave, cantidad, mediciones, cargaManual = null) {
     const cant = Math.max(1, Math.floor(Number(cantidad) || 1));
 
-    const exacta = escalasReales.find(
-      e => normStr(e.id_articulo) === idNorm && Number(e.cantidad) === cant
+    const exacta = (mediciones || []).find(
+      m => mismoArticulo(m, articuloClave) && Number(m.cantidad) === cant
     );
     if (exacta) {
       return {
         esReal: true,
-        origenTexto: '✅ Real (Historial BambuStudio)',
-        estadoHistorial: '✅ Medición real cargada (BambuStudio)',
+        origen: '✅ Real (Historial BambuStudio)',
+        estado: '✅ Medición real cargada (BambuStudio)',
         fecha: exacta.fecha,
-        gramosLote: Number(exacta.gramos_lote),
-        impLoteH: Number(exacta.tiempo_impresion_lote_h),
-        prepLoteH: Number(exacta.tiempo_preparacion_lote_h),
-        postUnitH: Number(exacta.tiempo_postprocesado_unit_h)
+        gramos: Number(exacta.gramos),
+        impresionH: Number(exacta.impresionH),
+        preparacionH: Number(exacta.preparacionH),
+        postUnitH: Number(exacta.postUnitH)
       };
     }
 
-    const ref = escalasReales.find(e => normStr(e.id_articulo) === idNorm);
+    if (cargaManual && Number(cargaManual.gramos) > 0 && Number(cargaManual.impresionH) > 0) {
+      const referencia = (mediciones || []).find(m => mismoArticulo(m, articuloClave));
+      const prepManual =
+        cargaManual.preparacionH !== null &&
+        Number.isFinite(Number(cargaManual.preparacionH)) &&
+        Number(cargaManual.preparacionH) >= 0
+          ? Number(cargaManual.preparacionH)
+          : (referencia ? Number(referencia.preparacionH) : 0);
 
-    if (manualOverride && Number(manualOverride.gramos) > 0 && Number(manualOverride.impH) > 0) {
-      const prepH = (manualOverride.prepH !== null && Number.isFinite(Number(manualOverride.prepH)) && Number(manualOverride.prepH) >= 0)
-        ? Number(manualOverride.prepH)
-        : (ref ? Number(ref.tiempo_preparacion_lote_h) : 0);
-      const postH = ref ? Number(ref.tiempo_postprocesado_unit_h) : 0;
       return {
         esReal: true,
-        origenTexto: '✅ Real (Carga Manual Nueva)',
-        estadoHistorial: '✅ Carga manual lista para guardar',
+        origen: '✅ Real (Carga Manual Nueva)',
+        estado: '✅ Carga manual lista para guardar',
         fecha: new Date().toISOString().slice(0, 10),
-        gramosLote: Number(manualOverride.gramos),
-        impLoteH: Number(manualOverride.impH),
-        prepLoteH: prepH,
-        postUnitH: postH
+        gramos: Number(cargaManual.gramos),
+        impresionH: Number(cargaManual.impresionH),
+        preparacionH: prepManual,
+        postUnitH: referencia ? Number(referencia.postUnitH) : 0
       };
     }
 
-    if (ref) {
-      const factorEscala = cant / Number(ref.cantidad);
+    const referencia = (mediciones || []).find(m => mismoArticulo(m, articuloClave));
+    if (referencia) {
+      const factorEscala = cant / Number(referencia.cantidad);
       return {
         esReal: false,
-        origenTexto: '⚠️ Estimado Preliminar (Falta medir en Slicer)',
-        estadoHistorial: '⚠️ Cantidad no registrada: cargá Gramos y Tiempo de BambuStudio',
-        fecha: ref.fecha,
-        gramosLote: Number(ref.gramos_lote) * factorEscala,
-        impLoteH: Number(ref.tiempo_impresion_lote_h) * factorEscala,
-        prepLoteH: Number(ref.tiempo_preparacion_lote_h),
-        postUnitH: Number(ref.tiempo_postprocesado_unit_h)
+        origen: '⚠️ Estimado Preliminar (Falta medir en Slicer)',
+        estado: '⚠️ Cantidad no registrada: cargá Gramos y Tiempo de BambuStudio',
+        fecha: referencia.fecha,
+        gramos: Number(referencia.gramos) * factorEscala,
+        impresionH: Number(referencia.impresionH) * factorEscala,
+        preparacionH: Number(referencia.preparacionH),
+        postUnitH: Number(referencia.postUnitH)
       };
     }
 
     return {
       esReal: false,
-      origenTexto: '⚠️ Sin mediciones en historial',
-      estadoHistorial: '⚠️ Artículo sin mediciones registradas',
+      origen: '⚠️ Sin mediciones en historial',
+      estado: '⚠️ Artículo sin mediciones registradas',
       fecha: new Date().toISOString().slice(0, 10),
-      gramosLote: 0,
-      impLoteH: 0,
-      prepLoteH: 0,
+      gramos: 0,
+      impresionH: 0,
+      preparacionH: 0,
       postUnitH: 0
     };
   }
 
-  function calcularFilaRegistroCostos(fila, escalasReales, todasFilasRegistro, params) {
-    const cant = Math.max(1, Math.floor(Number(fila.cantidad) || 1));
-    const factor = Number(fila.factor_multiplicador) || params.factor_defecto;
-    const datos = resolverDatosArticulo(fila.id_articulo, cant, escalasReales);
+  /* ------------------------ registro de costos ---------------------------- */
 
-    const tiempoTotalUnitH = (datos.impLoteH / cant) + (datos.prepLoteH / cant) + datos.postUnitH;
+  /** Calcula todas las columnas derivadas de una fila del catálogo. */
+  function calcularFila(fila, mediciones, registroCompleto, p) {
+    const cantidad = Math.max(1, Math.floor(Number(fila.cantidad) || 1));
+    const factor = Number(fila.factor) || p.factor_defecto;
+    const datos = resolverMedicion(fila.articuloId, cantidad, mediciones);
 
-    const costoBaseUnit = calcularCostoBaseUnitario(
-      cant,
-      datos.gramosLote,
-      datos.impLoteH,
-      datos.prepLoteH,
-      datos.postUnitH,
-      params
+    const tiempoTotalH = datos.impresionH / cantidad + datos.preparacionH / cantidad + datos.postUnitH;
+    const costoUnit = costoUnitario(cantidad, datos.gramos, datos.impresionH, datos.preparacionH, datos.postUnitH, p);
+    const costoLote = round(costoUnit * cantidad, 2);
+    const precioUnit = round(costoUnit * factor, 2);
+    const gananciaUnit = round(precioUnit - costoUnit, 2);
+
+    // Semáforo N=1: ¿tenemos costo confiable de una pieza suelta?
+    const medicion1 = (mediciones || []).find(
+      m => mismoArticulo(m, fila.articuloId) && Number(m.cantidad) === 1
     );
+    let costo1u = 0;
+    let medido1u = false;
 
-    const costoBaseLote = excelRound(costoBaseUnit * cant, 2);
-    const precioVentaUnit = excelRound(costoBaseUnit * factor, 2);
-    const gananciaNetaUnit = excelRound(precioVentaUnit - costoBaseUnit, 2);
-    const margenPct = precioVentaUnit > 0 ? (gananciaNetaUnit / precioVentaUnit) : 0;
-
-    const idNorm = normStr(fila.id_articulo);
-    const esc1 = escalasReales.find(
-      e => normStr(e.id_articulo) === idNorm && Number(e.cantidad) === 1
-    );
-
-    let costoBase1u = 0;
-    let esMedido1u = false;
-
-    if (esc1) {
-      costoBase1u = calcularCostoBaseUnitario(
-        1,
-        Number(esc1.gramos_lote),
-        Number(esc1.tiempo_impresion_lote_h),
-        Number(esc1.tiempo_preparacion_lote_h),
-        Number(esc1.tiempo_postprocesado_unit_h),
-        params
-      );
-      esMedido1u = true;
+    if (medicion1) {
+      costo1u = costoUnitario(1, medicion1.gramos, medicion1.impresionH,
+                              medicion1.preparacionH, medicion1.postUnitH, p);
+      medido1u = true;
     } else {
-      const reg1 = todasFilasRegistro.find(
-        r => normStr(r.id_articulo) === idNorm && Number(r.cantidad) === 1
+      const registro1 = (registroCompleto || []).find(
+        r => mismoArticulo(r, fila.articuloId) && Number(r.cantidad) === 1
       );
-      if (reg1 && cant !== 1) {
-        const d1 = resolverDatosArticulo(reg1.id_articulo, 1, escalasReales);
-        costoBase1u = calcularCostoBaseUnitario(
-          1, d1.gramosLote, d1.impLoteH, d1.prepLoteH, d1.postUnitH, params
-        );
-        esMedido1u = true;
+      if (registro1 && cantidad !== 1) {
+        const d1 = resolverMedicion(registro1.articuloId, 1, mediciones);
+        costo1u = costoUnitario(1, d1.gramos, d1.impresionH, d1.preparacionH, d1.postUnitH, p);
+        medido1u = true;
       } else {
-        costoBase1u = excelRound(
-          costoBaseUnit + (datos.prepLoteH * (1 - 1 / cant) * params.tiempo_manual_h),
-          2
-        );
-        esMedido1u = (cant === 1 && datos.esReal);
+        // Piso mínimo: se agrega la preparación que se ahorra al hacer lote.
+        costo1u = round(costoUnit + datos.preparacionH * (1 - 1 / cantidad) * p.tiempo_manual_h, 2);
+        medido1u = cantidad === 1 && datos.esReal;
       }
     }
 
-    const precioVenta1u = excelRound(costoBase1u * factor, 2);
-    const peUnidades = precioVentaUnit > 0 ? excelRoundUp(costoBaseLote / precioVentaUnit, 0) : 0;
+    const pe = precioUnit > 0 ? roundUp(costoLote / precioUnit, 0) : 0;
 
     return {
       id: fila.id,
       fecha: datos.fecha,
-      id_articulo: fila.id_articulo,
-      nombre_articulo: fila.nombre_articulo,
-      articuloLabel: `${fila.id_articulo} | ${fila.nombre_articulo}`,
-      cantidad: cant,
-      gramosLote: excelRound(datos.gramosLote, 2),
-      impLoteH: datos.impLoteH,
-      prepLoteH: datos.prepLoteH,
+      articuloId: fila.articuloId,
+      codigo: fila.codigo,
+      nombre: fila.nombre,
+      etiqueta: `${fila.codigo} | ${fila.nombre}`,
+      cantidad,
+      gramosLote: round(datos.gramos, 2),
+      impresionLoteH: datos.impresionH,
+      preparacionLoteH: datos.preparacionH,
       postUnitH: datos.postUnitH,
-      tiempoTotalUnitH,
-      impLoteHHMM: hoursToHHMM(datos.impLoteH),
-      prepLoteHHMM: hoursToHHMM(datos.prepLoteH),
-      postUnitHHMM: hoursToHHMM(datos.postUnitH),
-      tiempoTotalUnitHHMM: hoursToHHMM(tiempoTotalUnitH),
-      costoBaseUnit,
-      costoBaseLote,
+      tiempoTotalH,
+      impresionHHMM: aReloj(datos.impresionH),
+      preparacionHHMM: aReloj(datos.preparacionH),
+      postHHMM: aReloj(datos.postUnitH),
+      tiempoTotalHHMM: aReloj(tiempoTotalH),
+      costoUnit,
+      costoLote,
       factor,
-      precioVentaUnit,
-      gananciaNetaUnit,
-      margenPct,
-      costoBase1u,
-      precioVenta1u,
-      esMedido1u,
-      esRealLote: datos.esReal,
-      puntoEquilibrio: `${peUnidades} de ${cant} u.`,
-      peUnidades
+      precioUnit,
+      gananciaUnit,
+      margen: precioUnit > 0 ? gananciaUnit / precioUnit : 0,
+      costo1u,
+      precio1u: round(costo1u * factor, 2),
+      medido1u,
+      realLote: datos.esReal,
+      peUnidades: pe,
+      puntoEquilibrio: `${pe} de ${cantidad} u.`
     };
   }
 
-  function cotizarDinamico({ idArticulo, nombreArticulo, cantidad, factor, manualGramos, manualImpH, manualPrepH }, escalasReales, params) {
-    const cant = Math.max(1, Math.floor(Number(cantidad) || 1));
-    const fact = Number(factor) || params.factor_defecto;
+  /* ------------------------------ cotizador ------------------------------- */
 
-    const datos = resolverDatosArticulo(idArticulo, cant, escalasReales, {
-      gramos: manualGramos,
-      impH: manualImpH,
-      prepH: manualPrepH
+  /** Cotización dinámica para una cantidad + factor, con tabla de escalas. */
+  function cotizar(entrada, mediciones, p) {
+    const cantidad = Math.max(1, Math.floor(Number(entrada.cantidad) || 1));
+    const factor = Number(entrada.factor) || p.factor_defecto;
+
+    const datos = resolverMedicion(entrada.articuloId, cantidad, mediciones, {
+      gramos: entrada.gramosManual,
+      impresionH: entrada.impManualH,
+      preparacionH: entrada.prepManualH
     });
 
-    const prepUnitH = datos.prepLoteH / cant;
-    const tiempoTotalUnitH = (datos.impLoteH / cant) + prepUnitH + datos.postUnitH;
-    const tiempoTotalLoteH = tiempoTotalUnitH * cant;
+    const prepUnitH = datos.preparacionH / cantidad;
+    const tiempoUnitH = datos.impresionH / cantidad + prepUnitH + datos.postUnitH;
+    const tiempoLoteH = tiempoUnitH * cantidad;
 
-    const costoBaseUnit = calcularCostoBaseUnitario(
-      cant, datos.gramosLote, datos.impLoteH, datos.prepLoteH, datos.postUnitH, params
-    );
-    const costoBaseLote = excelRound(costoBaseUnit * cant, 2);
-    const precioVentaUnit = excelRound(costoBaseUnit * fact, 2);
-    const precioVentaLote = excelRound(precioVentaUnit * cant, 2);
-    const gananciaNetaUnit = excelRound(precioVentaUnit - costoBaseUnit, 2);
-    const gananciaNetaLote = excelRound(gananciaNetaUnit * cant, 2);
+    const costoUnit = costoUnitario(cantidad, datos.gramos, datos.impresionH, datos.preparacionH, datos.postUnitH, p);
+    const costoLote = round(costoUnit * cantidad, 2);
+    const precioUnit = round(costoUnit * factor, 2);
+    const precioLote = round(precioUnit * cantidad, 2);
+    const gananciaUnit = round(precioUnit - costoUnit, 2);
 
-    const idNorm = normStr(idArticulo);
-    const esc1 = escalasReales.find(
-      e => normStr(e.id_articulo) === idNorm && Number(e.cantidad) === 1
+    // Comparativa: ¿cuánto costaría vender 1 unidad suelta?
+    const medicion1 = (mediciones || []).find(
+      m => mismoArticulo(m, entrada.articuloId) && Number(m.cantidad) === 1
     );
-    let compVenta1u = 0;
-    if (esc1) {
-      const c1 = calcularCostoBaseUnitario(
-        1, esc1.gramos_lote, esc1.tiempo_impresion_lote_h, esc1.tiempo_preparacion_lote_h, esc1.tiempo_postprocesado_unit_h, params
-      );
-      compVenta1u = excelRound(c1 * fact, 2);
+    let compVenta1u;
+    if (medicion1) {
+      const c1 = costoUnitario(1, medicion1.gramos, medicion1.impresionH,
+                               medicion1.preparacionH, medicion1.postUnitH, p);
+      compVenta1u = round(c1 * factor, 2);
     } else {
-      compVenta1u = excelRound((costoBaseUnit + (prepUnitH * (cant - 1) * params.tiempo_manual_h)) * fact, 2);
+      compVenta1u = round((costoUnit + prepUnitH * (cantidad - 1) * p.tiempo_manual_h) * factor, 2);
     }
 
-    const peUnidades = precioVentaUnit > 0 ? excelRoundUp(costoBaseLote / precioVentaUnit, 0) : 0;
+    const pe = precioUnit > 0 ? roundUp(costoLote / precioUnit, 0) : 0;
 
-    const escalasObjetivo = [1, 3, 5, 10, 20];
-    const tablaEscalas = escalasObjetivo.map(n => {
-      const dEsc = resolverDatosArticulo(idArticulo, n, escalasReales);
-      const prepPorPieza = excelRound((dEsc.prepLoteH / n) * params.tiempo_manual_h, 2);
-      const cBaseU = calcularCostoBaseUnitario(
-        n, dEsc.gramosLote, dEsc.impLoteH, dEsc.prepLoteH, dEsc.postUnitH, params
-      );
-      const pVentaU = excelRound(cBaseU * fact, 2);
-      const cTotalLote = excelRound(cBaseU * n, 2);
-      const pe = pVentaU > 0 ? excelRoundUp(cTotalLote / pVentaU, 0) : 0;
+    const escalas = ESCALAS_OBJETIVO.map(n => {
+      const d = resolverMedicion(entrada.articuloId, n, mediciones);
+      const prepPieza = round((d.preparacionH / n) * p.tiempo_manual_h, 2);
+      const cUnit = costoUnitario(n, d.gramos, d.impresionH, d.preparacionH, d.postUnitH, p);
+      const pUnit = round(cUnit * factor, 2);
+      const cLote = round(cUnit * n, 2);
+      const peEsc = pUnit > 0 ? roundUp(cLote / pUnit, 0) : 0;
       return {
         unidades: n,
-        esReal: dEsc.esReal,
-        origen: dEsc.esReal ? '✅ Real' : '⚠️ Estimado',
-        prepPorPieza,
-        costoBaseUnit: cBaseU,
-        precioVentaUnit: pVentaU,
-        costoTotalLote: cTotalLote,
-        puntoEquilibrio: `${pe} de ${n} u.`
+        esReal: d.esReal,
+        origen: d.esReal ? '✅ Real' : '⚠️ Estimado',
+        prepPieza,
+        costoUnit: cUnit,
+        precioUnit: pUnit,
+        costoLote: cLote,
+        puntoEquilibrio: `${peEsc} de ${n} u.`
       };
     });
 
     return {
-      idArticulo,
-      nombreArticulo,
-      cantidad: cant,
-      factor: fact,
+      articuloId: entrada.articuloId,
+      codigo: entrada.codigo,
+      nombre: entrada.nombre,
+      cantidad,
+      factor,
       esReal: datos.esReal,
-      origenTexto: datos.origenTexto,
-      estadoHistorial: datos.estadoHistorial,
-      gramosActivos: excelRound(datos.gramosLote, 2),
-      impActivoH: datos.impLoteH,
-      impActivoHHMM: hoursToHHMM(datos.impLoteH),
+      origen: datos.origen,
+      estado: datos.estado,
+      gramosActivos: round(datos.gramos, 2),
+      impresionActivaH: datos.impresionH,
+      impresionActivaHHMM: aReloj(datos.impresionH),
       prepUnitH,
-      prepUnitHHMM: hoursToHHMM(prepUnitH),
+      prepUnitHHMM: aReloj(prepUnitH),
       postUnitH: datos.postUnitH,
-      postUnitHHMM: hoursToHHMM(datos.postUnitH),
-      tiempoTotalUnitH,
-      tiempoTotalUnitHHMM: hoursToHHMM(tiempoTotalUnitH),
-      tiempoTotalLoteH,
-      tiempoTotalLoteHHMM: hoursToHHMM(tiempoTotalLoteH),
-      costoBaseUnit,
-      costoBaseLote,
-      precioVentaUnit,
-      precioVentaLote,
-      gananciaNetaUnit,
-      gananciaNetaLote,
+      postUnitHHMM: aReloj(datos.postUnitH),
+      tiempoUnitH,
+      tiempoUnitHHMM: aReloj(tiempoUnitH),
+      tiempoLoteHHMM: aReloj(tiempoLoteH),
+      costoUnit,
+      costoLote,
+      precioUnit,
+      precioLote,
+      gananciaUnit,
+      gananciaLote: round(gananciaUnit * cantidad, 2),
       compVenta1u,
-      puntoEquilibrio: `${peUnidades} de ${cant} u.`,
-      tablaEscalas
+      puntoEquilibrio: `${pe} de ${cantidad} u.`,
+      escalas
     };
   }
 
-  function calcularCombos(presupuestoCliente, factorComboGlobal, lineasSeleccionadas, filasRegistroCalculadas, escalasReales, params) {
+  /* ------------------------------- combos --------------------------------- */
+
+  /**
+   * Arma 4 opciones de combo para un presupuesto:
+   *   Opción 1 equilibrada, Opción 2 máxima cantidad, Opción 3 máxima ganancia
+   *   y el armado manual del usuario.
+   */
+  function calcularCombos(presupuestoCliente, factorGlobal, lineas, filasCalculadas, mediciones, p) {
     const presupuesto = Math.max(0, Number(presupuestoCliente) || 0);
 
     const items = [];
-    for (let idx = 0; idx < lineasSeleccionadas.length; idx++) {
-      const linea = lineasSeleccionadas[idx];
-      if (!linea || !linea.id_articulo) continue;
+    lineas.forEach((linea, idx) => {
+      if (!linea || !linea.articuloId) return;
+      const fila = (filasCalculadas || []).find(r => mismoArticulo(r, linea.articuloId));
+      if (!fila) return;
 
-      const idNorm = normStr(linea.id_articulo);
-      const reg = filasRegistroCalculadas.find(r => normStr(r.id_articulo) === idNorm);
-      if (!reg) continue;
+      const factorAplicado = factorGlobal === 'Según Registro de Costos'
+        ? fila.factor
+        : Number(factorGlobal);
 
-      const factorAplicado = (factorComboGlobal === 'Según Registro de Costos')
-        ? reg.factor
-        : Number(factorComboGlobal);
+      const gramosUnit = fila.gramosLote / fila.cantidad;
+      const impUnit = fila.impresionLoteH / fila.cantidad;
 
-      const gramosUnit = reg.gramosLote / reg.cantidad;
-      const tiempoImpUnit = reg.impLoteH / reg.cantidad;
-      const tiempoPostUnit = reg.postUnitH;
-
-      const costoMat = (gramosUnit / 1000.0) * params.precio_plastico_usd_kg * params.cotizacion_dolar;
-      const costoElec = (params.consumo_maquina_w / 1000.0) * tiempoImpUnit * params.energia_kwh;
-      const costoDesg = tiempoImpUnit * params.desgaste_maquina_h;
-      const costoMOpost = tiempoPostUnit * params.tiempo_manual_h;
-
-      const c_var = costoMat + costoElec + costoDesg + costoMOpost;
-      const c_fix = reg.prepLoteH * params.tiempo_manual_h;
-      const p_var = c_var * factorAplicado;
-      const p_fix = c_fix * factorAplicado;
-      const g_var = p_var - c_var;
+      // Coste variable por pieza + coste fijo de preparación del lote.
+      const cVar =
+        (gramosUnit / 1000) * p.precio_plastico_usd_kg * p.cotizacion_dolar +
+        (p.consumo_maquina_w / 1000) * impUnit * p.energia_kwh +
+        impUnit * p.desgaste_maquina_h +
+        fila.postUnitH * p.tiempo_manual_h;
+      const cFij = fila.preparacionLoteH * p.tiempo_manual_h;
 
       items.push({
-        slotIndex: idx,
-        id_articulo: reg.id_articulo,
-        nombre_articulo: reg.nombre_articulo,
-        reg,
+        slot: idx,
+        articuloId: fila.articuloId,
+        codigo: fila.codigo,
+        nombre: fila.nombre,
+        fila,
         factorAplicado,
-        costoRef1u: reg.costoBase1u,
-        precioRef1u: excelRound(reg.costoBase1u * factorAplicado, 2),
-        c_var,
-        c_fix,
-        p_var,
-        p_fix,
-        g_var,
-        op1: 0,
-        op2: 0,
-        op3: 0,
+        costoBase1u: fila.costo1u,
+        precioRef1u: round(fila.costo1u * factorAplicado, 2),
+        cVar,
+        cFij,
+        pVar: cVar * factorAplicado,
+        pFij: cFij * factorAplicado,
+        gVar: (cVar * factorAplicado) - cVar,
+        op1: 0, op2: 0, op3: 0,
         manual: Math.max(0, Math.floor(Number(linea.manualCant) || 0))
       });
-    }
+    });
 
-    if (items.length === 0) {
-      return { items: [], opciones: [] };
-    }
+    if (!items.length) return { items: [], opciones: [] };
 
-    const sumPvar = items.reduce((acc, x) => acc + x.p_var, 0);
-    const sumPfix = items.reduce((acc, x) => acc + x.p_fix, 0);
-    const k2 = Math.max(0, presupuesto - sumPfix);
-    const j2 = sumPvar > 0 ? Math.floor(k2 / sumPvar) : 0;
+    const sumaPVar = items.reduce((a, x) => a + x.pVar, 0);
+    const sumaPFij = items.reduce((a, x) => a + x.pFij, 0);
+    const disponible = Math.max(0, presupuesto - sumaPFij);
+    const base = sumaPVar > 0 ? Math.floor(disponible / sumaPVar) : 0;
 
-    let remOp1 = k2 - j2 * sumPvar;
-    for (const x of items) {
-      if (remOp1 >= x.p_var - 1e-9) {
-        x.op1 = j2 + 1;
-        remOp1 -= x.p_var;
+    // Opción 1: reparto parejo y sobrante a quienes pueden absorberlo.
+    let resto = disponible - base * sumaPVar;
+    for (const item of items) {
+      if (resto >= item.pVar - 1e-9) {
+        item.op1 = base + 1;
+        resto -= item.pVar;
       } else {
-        x.op1 = j2;
+        item.op1 = base;
       }
     }
 
-    const sumW2 = items.reduce((acc, x) => acc + (x.p_var > 0 ? 1 / (x.p_var * x.p_var) : 0), 0);
-    for (const x of items) {
-      const w2 = x.p_var > 0 ? 1 / (x.p_var * x.p_var) : 0;
-      x.base_op2 = (sumW2 > 0 && x.p_var > 0)
-        ? Math.max(1, Math.floor((k2 * (w2 / sumW2)) / x.p_var))
+    // Opción 2: ponderación inversa al cuadrado → favorece piezas baratas.
+    const pesos2 = items.reduce((a, x) => a + (x.pVar > 0 ? 1 / (x.pVar * x.pVar) : 0), 0);
+    for (const item of items) {
+      const w = item.pVar > 0 ? 1 / (item.pVar * item.pVar) : 0;
+      item.base2 = pesos2 > 0 && item.pVar > 0
+        ? Math.max(1, Math.floor((disponible * (w / pesos2)) / item.pVar))
         : 0;
     }
-    const sumBaseP2 = items.reduce((acc, x) => acc + x.base_op2 * x.p_var, 0);
-    let rem2 = Math.max(0, k2 - sumBaseP2);
-    const ordenOp2 = items
-      .map((x, i) => ({ x, i }))
-      .sort((a, b) => (a.x.p_var - b.x.p_var) || (a.i - b.i));
-    for (const { x } of ordenOp2) {
-      const ext = x.p_var > 0 ? Math.floor(rem2 / x.p_var) : 0;
-      x.op2 = x.base_op2 + ext;
-      rem2 -= ext * x.p_var;
+    resto = Math.max(0, disponible - items.reduce((a, x) => a + x.base2 * x.pVar, 0));
+    for (const item of [...items].sort((a, b) => (a.pVar - b.pVar) || (a.slot - b.slot))) {
+      const extra = item.pVar > 0 ? Math.floor(resto / item.pVar) : 0;
+      item.op2 = item.base2 + extra;
+      resto -= extra * item.pVar;
     }
 
-    const sumW3 = items.reduce((acc, x) => acc + (x.g_var * x.g_var), 0);
-    for (const x of items) {
-      const w3 = x.g_var * x.g_var;
-      x.base_op3 = (sumW3 > 0 && x.p_var > 0)
-        ? Math.max(1, Math.floor((k2 * (w3 / sumW3)) / x.p_var))
+    // Opción 3: ponderación por ganancia al cuadrado → favorece piezas rentables.
+    const pesos3 = items.reduce((a, x) => a + x.gVar * x.gVar, 0);
+    for (const item of items) {
+      const w = item.gVar * item.gVar;
+      item.base3 = pesos3 > 0 && item.pVar > 0
+        ? Math.max(1, Math.floor((disponible * (w / pesos3)) / item.pVar))
         : 0;
     }
-    const sumBaseP3 = items.reduce((acc, x) => acc + x.base_op3 * x.p_var, 0);
-    let rem3 = Math.max(0, k2 - sumBaseP3);
-    const ordenOp3 = items
-      .map((x, i) => ({ x, i }))
-      .sort((a, b) => (b.x.g_var - a.x.g_var) || (a.i - b.i));
-    for (const { x } of ordenOp3) {
-      const ext = x.p_var > 0 ? Math.floor(rem3 / x.p_var) : 0;
-      x.op3 = x.base_op3 + ext;
-      rem3 -= ext * x.p_var;
+    resto = Math.max(0, disponible - items.reduce((a, x) => a + x.base3 * x.pVar, 0));
+    for (const item of [...items].sort((a, b) => (b.gVar - a.gVar) || (a.slot - b.slot))) {
+      const extra = item.pVar > 0 ? Math.floor(resto / item.pVar) : 0;
+      item.op3 = item.base3 + extra;
+      resto -= extra * item.pVar;
     }
 
-    const evaluar = (nombre, key) => {
+    /** Evalúa una distribución de cantidades y produce la fila de resultado. */
+    function evaluar(nombre, clave) {
       const partes = [];
       let totalPiezas = 0;
       let precioVenta = 0;
-      let costoProd = 0;
+      let costoProduccion = 0;
       let tiempoTotal = 0;
       let faltaMedir = false;
 
-      for (const x of items) {
-        const cant = x[key];
+      for (const item of items) {
+        const cant = item[clave];
         if (cant <= 0) continue;
+
         totalPiezas += cant;
-        partes.push(`${x.nombre_articulo} (${x.id_articulo}) x${cant}`);
+        partes.push(`${item.nombre} (${item.codigo}) x${cant}`);
 
-        const idNorm = normStr(x.id_articulo);
-        const matchReg = filasRegistroCalculadas.find(
-          r => normStr(r.id_articulo) === idNorm && r.cantidad === cant
-        );
-        const matchEsc = escalasReales.find(
-          e => normStr(e.id_articulo) === idNorm && Number(e.cantidad) === cant
-        );
+        const filaReg = filasCalculadas.find(r => mismoArticulo(r, item.articuloId) && r.cantidad === cant);
+        const med = (mediciones || []).find(m => mismoArticulo(m, item.articuloId) && Number(m.cantidad) === cant);
 
-        let costoLote = 0;
-        if (matchReg) {
-          costoLote = matchReg.costoBaseLote;
-        } else if (matchEsc) {
-          const cU = calcularCostoBaseUnitario(
-            cant, matchEsc.gramos_lote, matchEsc.tiempo_impresion_lote_h, matchEsc.tiempo_preparacion_lote_h, matchEsc.tiempo_postprocesado_unit_h, params
-          );
-          costoLote = excelRound(cU * cant, 2);
+        let costoLote;
+        if (filaReg) {
+          costoLote = filaReg.costoLote;
+        } else if (med) {
+          const cU = costoUnitario(cant, med.gramos, med.impresionH, med.preparacionH, med.postUnitH, p);
+          costoLote = round(cU * cant, 2);
         } else {
+          // Sin lote medido: estimación lineal (marca ámbar).
           faltaMedir = true;
-          const gramosUnit = x.reg.gramosLote / x.reg.cantidad;
-          const impUnit = x.reg.impLoteH / x.reg.cantidad;
-          const cMat = ((gramosUnit * cant) / 1000.0) * params.precio_plastico_usd_kg * params.cotizacion_dolar;
-          const cElec = (params.consumo_maquina_w / 1000.0) * (impUnit * cant) * params.energia_kwh;
-          const cDesg = (impUnit * cant) * params.desgaste_maquina_h;
-          const cMO = (x.reg.prepLoteH + (x.reg.postUnitH * cant)) * params.tiempo_manual_h;
-          costoLote = excelRound(cMat + cElec + cDesg + cMO, 2);
+          const gramosUnit = item.fila.gramosLote / item.fila.cantidad;
+          const impUnit = item.fila.impresionLoteH / item.fila.cantidad;
+          const material = ((gramosUnit * cant) / 1000) * p.precio_plastico_usd_kg * p.cotizacion_dolar;
+          const energia = (p.consumo_maquina_w / 1000) * (impUnit * cant) * p.energia_kwh;
+          const desgaste = (impUnit * cant) * p.desgaste_maquina_h;
+          const manoObra = (item.fila.preparacionLoteH + item.fila.postUnitH * cant) * p.tiempo_manual_h;
+          costoLote = round(material + energia + desgaste + manoObra, 2);
         }
 
-        precioVenta += x.factorAplicado * costoLote;
-        costoProd += costoLote;
-        tiempoTotal += cant * x.reg.tiempoTotalUnitH;
+        precioVenta += item.factorAplicado * costoLote;
+        costoProduccion += costoLote;
+        tiempoTotal += cant * item.fila.tiempoTotalH;
       }
 
-      const ventaRound = excelRound(precioVenta, 2);
-      const costoRound = excelRound(costoProd, 2);
+      const venta = round(precioVenta, 2);
+      const costo = round(costoProduccion, 2);
       return {
         nombre,
-        key,
+        clave,
         composicion: partes.length ? partes.join(', ') : 'Sin artículos seleccionados',
         totalPiezas,
-        precioVenta: ventaRound,
-        costoProduccion: costoRound,
-        gananciaNeta: excelRound(ventaRound - costoRound, 2),
-        saldoPresupuesto: excelRound(presupuesto - ventaRound, 2),
+        precioVenta: venta,
+        costoProduccion: costo,
+        gananciaNeta: round(venta - costo, 2),
+        saldo: round(presupuesto - venta, 2),
         tiempoTotalH: tiempoTotal,
-        tiempoTotalHHMM: hoursToHHMM(tiempoTotal),
+        tiempoTotalHHMM: aReloj(tiempoTotal),
         esReal: totalPiezas > 0 && !faltaMedir,
         origen: totalPiezas === 0
           ? '— Sin artículos'
           : (faltaMedir ? '⚠️ Estimado Preliminar (Falta medir lote en Slicer)' : '✅ Real (Historial BambuStudio)')
       };
+    }
+
+    return {
+      items,
+      opciones: [
+        evaluar('Opción 1 (Equilibrada)', 'op1'),
+        evaluar('Opción 2 (Máx. Cantidad)', 'op2'),
+        evaluar('Opción 3 (Máx. Ganancia)', 'op3'),
+        evaluar('Tu Armado Manual', 'manual')
+      ]
     };
-
-    const opciones = [
-      evaluar('Opción 1 (Equilibrada)', 'op1'),
-      evaluar('Opción 2 (Máx. Cantidad)', 'op2'),
-      evaluar('Opción 3 (Máx. Ganancia)', 'op3'),
-      evaluar('Tu Armado Manual', 'manual')
-    ];
-
-    return { items, opciones };
   }
 
   return {
-    excelRound,
-    excelRoundUp,
-    hoursToHHMM,
-    hhmmToHours,
-    normalizeHHMM,
-    mapParametros,
-    calcularCostoBaseUnitario,
-    resolverDatosArticulo,
-    calcularFilaRegistroCostos,
-    cotizarDinamico,
+    round,
+    roundUp,
+    aReloj,
+    aHoras,
+    normalizarReloj,
+    leerParametros,
+    costoUnitario,
+    resolverMedicion,
+    calcularFila,
+    cotizar,
     calcularCombos
   };
 })();

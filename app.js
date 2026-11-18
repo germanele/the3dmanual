@@ -1,1133 +1,1001 @@
 /**
- * ============================================================================
- * CONTROLADOR PRINCIPAL DE INTERFAZ Y OPERACIONES CRUD EN TIEMPO REAL (SUPABASE)
- * ============================================================================
+ * =============================================================================
+ * CONTROLADOR DE INTERFAZ — v2
+ * Estado central, renderizado por módulos y delegación de eventos.
+ * La lógica de negocio vive en engine.js; la persistencia en db.js.
+ * =============================================================================
  */
 
-let escalaChart = null;
+'use strict';
 
-// Estado inicial del Armador de Combos
-let comboState = {
-  presupuesto: 3278,
-  factorGlobal: '2',
-  lineas: [
-    { id_articulo: 'ART-002', manualCant: 15 },
-    { id_articulo: 'ART-003', manualCant: 10 },
-    { id_articulo: 'ART-004', manualCant: 12 },
-    { id_articulo: 'ART-005', manualCant: 3 }
-  ]
+const estado = {
+  datos: { parametros: [], articulos: [], mediciones: [], registro: [], combos: [], pedidos: [] },
+  parametros: {},
+  filasCalculadas: [],
+  combo: { presupuesto: 3278, factor: '2', lineas: [], opciones: [], items: [] },
+  borradorPedido: [{ tipo: 'articulo', refId: '', cantidad: 1, precioUnitario: 0 }],
+  comboInicializado: false,
+  grafico: null,
+  ultimaCotizacion: null
 };
 
-// Borrador de ítems para Nuevo Pedido de Cliente (permite múltiples artículos y combos guardados)
-let pedidoDraftLineas = [
-  { tipo: 'articulo', refId: '', cantidad: 1, precioUnitario: 0 }
-];
+const ESTADOS_PEDIDO = ['Pendiente', 'En Producción', 'Listo para Entrega', 'Entregado', 'Cancelado'];
 
-function escHtml(str) {
-  return String(str ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+/* ============================ utilidades ================================= */
+
+function esc(valor) {
+  return String(valor ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-function showToast(msg) {
+function dinero(valor) {
+  const n = new Intl.NumberFormat('es-UY', {
+    minimumFractionDigits: 2, maximumFractionDigits: 2
+  }).format(Number(valor || 0));
+  return `$ ${n}`;
+}
+
+function porcentaje(valor) {
+  return `${(Number(valor || 0) * 100).toFixed(1)} %`;
+}
+
+let timerToast;
+function avisar(mensaje, tipo = 'info') {
   const el = document.getElementById('toast');
-  el.textContent = msg;
-  el.classList.add('show');
-  clearTimeout(window.__toastTimer);
-  window.__toastTimer = setTimeout(() => el.classList.remove('show'), 2900);
+  el.textContent = mensaje;
+  el.className = `toast visible ${tipo}`;
+  clearTimeout(timerToast);
+  timerToast = setTimeout(() => { el.className = 'toast'; }, 3200);
 }
 
-function fmtUYU(val) {
-  return '$' + Number(val || 0).toLocaleString('es-UY', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  });
+function fijarEstadoBD(texto, clase) {
+  const el = document.getElementById('estado-bd');
+  el.textContent = texto;
+  el.className = `estado-bd ${clase}`;
 }
 
-function fmtPct(val) {
-  return (Number(val || 0) * 100).toFixed(1) + '%';
+function hoyISO() {
+  return new Date().toISOString().slice(0, 10);
 }
 
-/**
- * Normaliza un campo de entrada hh:mm al perder el foco
- */
-function handleHHMMBlur(inputEl) {
-  const raw = inputEl.value.trim();
-  if (!raw) return;
-  const norm = Engine3D.normalizeHHMM(raw);
-  if (norm === null) {
-    showToast('⚠️ Formato de tiempo inválido. Usá hh:mm (ej: 02:30 o 00:05)');
-    inputEl.focus();
-  } else {
-    inputEl.value = norm;
-  }
+function articuloPorId(id) {
+  return estado.datos.articulos.find(a => String(a.id) === String(id));
 }
 
-/**
- * Previsualiza el ID automático ART-XXX según el nombre ingresado
- */
-async function previewNextArticuloId(nombreVal) {
-  const badge = document.getElementById('reg-next-id');
+function comboPorId(id) {
+  return estado.datos.combos.find(c => String(c.id) === String(id));
+}
+
+/** Resuelve un código ART-XXX o un id numérico a id numérico. */
+function idArticuloDesde(valor) {
+  if (valor === '' || valor === null || valor === undefined) return '';
+  const porCodigo = estado.datos.articulos.find(a => a.codigo === valor);
+  if (porCodigo) return porCodigo.id;
+  const porId = articuloPorId(valor);
+  return porId ? porId.id : '';
+}
+
+/* ============================ carga general ============================== */
+
+async function recargar() {
+  estado.datos = await DataStore.cargarTodo();
+  estado.parametros = Calc.leerParametros(estado.datos.parametros);
+  estado.filasCalculadas = estado.datos.registro.map(fila =>
+    Calc.calcularFila(fila, estado.datos.mediciones, estado.datos.registro, estado.parametros)
+  );
+  sembrarCombo();
+  renderizarTodo();
+}
+
+function sembrarCombo() {
+  if (estado.comboInicializado) return;
+  const semilla = [
+    ['ART-002', 15], ['ART-003', 10], ['ART-004', 12], ['ART-005', 3]
+  ];
+  estado.combo.lineas = semilla.map(([codigo, manual]) => ({
+    articuloId: idArticuloDesde(codigo),
+    manualCant: manual
+  }));
+  estado.comboInicializado = true;
+}
+
+function renderizarTodo() {
+  renderizarCatalogo();
+  renderizarCotizador();
+  renderizarCombos();
+  renderizarPedidos();
+  renderizarMediciones();
+  renderizarParametros();
+
+  document.getElementById('lista-articulos').innerHTML = estado.datos.articulos
+    .map(a => `<option value="${esc(a.nombre)}">`).join('');
+  document.getElementById('lista-clientes').innerHTML = [...new Set(
+    estado.datos.pedidos.map(p => p.cliente).filter(Boolean)
+  )].map(c => `<option value="${esc(c)}">`).join('');
+
+  actualizarPreviewId();
+}
+
+async function actualizarPreviewId() {
+  const badge = document.getElementById('next-art-id');
   if (!badge) return;
-  try {
-    const clean = String(nombreVal || '').replace(/^ART-\d+\s*\|\s*/i, '').trim();
-    if (clean) {
-      const existing = await DB3D.findArticuloByName(clean);
-      if (existing) {
-        badge.textContent = `🔒 ${existing.id_articulo} (Existente)`;
-        return;
-      }
-    }
-    const nextId = await DB3D.getNextArticuloId();
-    badge.textContent = `🔒 ${nextId}`;
-  } catch (err) {
-    console.warn(err);
+  const nombre = (document.getElementById('art-nombre')?.value || '')
+    .replace(/^ART-\d+\s*\|\s*/i, '').trim();
+  if (nombre && estado.datos.articulos.some(a => a.nombre.toLowerCase() === nombre.toLowerCase())) {
+    const existente = estado.datos.articulos.find(a => a.nombre.toLowerCase() === nombre.toLowerCase());
+    badge.textContent = `🔒 ${existente.codigo} (existente)`;
+    return;
   }
+  const max = estado.datos.articulos.reduce((m, a) => Math.max(m, Number(a.id) || 0), 0);
+  badge.textContent = `🔒 ART-${String(max + 1).padStart(3, '0')}`;
 }
 
-/**
- * Recalcula y renderiza TODAS las vistas de la aplicación desde Supabase
- */
-async function refreshAll() {
-  try {
-    const {
-      paramRows,
-      articulos,
-      escalasReales,
-      registroRaw,
-      combosGuardados,
-      pedidos,
-      pedidoItems
-    } = await DB3D.getAllData();
+/* ====================== MÓDULO 1: CATÁLOGO =============================== */
 
-    const params = Engine3D.mapParametros(paramRows);
-    const registroCalc = registroRaw.map(r =>
-      Engine3D.calcularFilaRegistroCostos(r, escalasReales, registroRaw, params)
-    );
+function renderizarCatalogo() {
+  const tbody = document.getElementById('body-catalogo');
+  const factores = [1.5, 2, 2.5, 3, 4, 5];
 
-    // Actualizar datalist de nombres de artículos
-    const datalist = document.getElementById('catalogo-nombres-list');
-    datalist.innerHTML = articulos.map(a => `<option value="${escHtml(a.nombre)}">`).join('');
-
-    // Actualizar datalist de clientes históricos
-    const clientesUnicos = [...new Set(pedidos.map(p => p.cliente).filter(Boolean))];
-    const clientesList = document.getElementById('clientes-list');
-    if (clientesList) {
-      clientesList.innerHTML = clientesUnicos.map(c => `<option value="${escHtml(c)}">`).join('');
-    }
-
-    // Actualizar vista previa de siguiente ID ART-XXX
-    const regArtInput = document.getElementById('reg-art');
-    await previewNextArticuloId(regArtInput ? regArtInput.value : '');
-
-    renderRegistroCostos(registroCalc);
-    renderCotizador(articulos, escalasReales, params);
-    renderCombos(registroCalc, escalasReales, params, combosGuardados);
-    renderPedidos(pedidos, pedidoItems, registroCalc, combosGuardados);
-    renderEscalasReales(escalasReales, params);
-    renderParametros(paramRows);
-  } catch (err) {
-    console.error(err);
-    showToast('❌ Error sincronizando con Supabase: ' + err.message);
-  }
-}
-
-/* ============================================================================
-   1. TAB: ARTÍCULOS (Catálogo + Costos + Semáforo N=1)
-   ============================================================================ */
-function renderRegistroCostos(registroCalc) {
-  const factoresDisponibles = [1.5, 2, 2.5, 3, 4, 5];
-  const tbody = document.getElementById('tbody-registro');
-  tbody.innerHTML = registroCalc.map(row => {
-    const optsFactor = factoresDisponibles.includes(row.factor)
-      ? factoresDisponibles
-      : [...factoresDisponibles, row.factor].sort((a, b) => a - b);
-
+  tbody.innerHTML = estado.filasCalculadas.map(fila => {
+    const opciones = factores.includes(fila.factor)
+      ? factores
+      : [...factores, fila.factor].sort((a, b) => a - b);
     return `
       <tr>
-        <td>${escHtml(row.fecha)}</td>
-        <td><span class="badge badge-blue" title="Identificador único de base de datos (no modificable)">${escHtml(row.id_articulo)}</span></td>
-        <td>
-          <input type="text" class="inline-name-input" value="${escHtml(row.nombre_articulo)}"
-            onchange="updateArticuloNombre('${escHtml(row.id_articulo)}', this.value)"
-            title="Editar nombre del artículo">
-        </td>
+        <td>${esc(fila.fecha)}</td>
+        <td><span class="etiqueta etiqueta-azul" title="Generado por PostgreSQL">${esc(fila.codigo)}</span></td>
+        <td><input class="entrada-inline nombre-inline" value="${esc(fila.nombre)}"
+              data-campo="reg-nombre" data-id="${fila.id}" title="Editar nombre"></td>
+        <td class="num"><input type="number" class="entrada-inline" min="1" step="1" value="${fila.cantidad}"
+              data-campo="reg-cantidad" data-id="${fila.id}"></td>
+        <td class="num">${fila.gramosLote.toFixed(2)} g</td>
+        <td class="num">${fila.impresionHHMM}</td>
+        <td class="num">${fila.preparacionHHMM}</td>
+        <td class="num">${fila.postHHMM}</td>
+        <td class="num">${fila.tiempoTotalHHMM}</td>
+        <td class="num"><strong>${dinero(fila.costoUnit)}</strong></td>
+        <td class="num">${dinero(fila.costoLote)}</td>
         <td class="num">
-          <input type="number" class="inline-input" min="1" step="1" value="${row.cantidad}"
-            onchange="updateRegistroCantidad(${row.id}, this.value)">
-        </td>
-        <td class="num">${row.gramosLote.toFixed(2)} g</td>
-        <td class="num">${row.impLoteHHMM}</td>
-        <td class="num">${row.prepLoteHHMM}</td>
-        <td class="num">${row.postUnitHHMM}</td>
-        <td class="num">${row.tiempoTotalUnitHHMM}</td>
-        <td class="num"><strong>${fmtUYU(row.costoBaseUnit)}</strong></td>
-        <td class="num">${fmtUYU(row.costoBaseLote)}</td>
-        <td class="num">
-          <select class="inline-select" onchange="updateRegistroFactor(${row.id}, this.value)">
-            ${optsFactor.map(f => `<option value="${f}" ${row.factor === f ? 'selected' : ''}>${f.toFixed(1)}x</option>`).join('')}
+          <select class="entrada-inline" data-campo="reg-factor" data-id="${fila.id}">
+            ${opciones.map(f => `<option value="${f}" ${fila.factor === f ? 'selected' : ''}>${f.toFixed(1)}×</option>`).join('')}
           </select>
         </td>
-        <td class="num" style="color: var(--accent); font-weight: 700;">${fmtUYU(row.precioVentaUnit)}</td>
-        <td class="num" style="color: var(--green-text);">${fmtUYU(row.gananciaNetaUnit)}</td>
-        <td class="num">${fmtPct(row.margenPct)}</td>
+        <td class="num texto-acento negrita">${dinero(fila.precioUnit)}</td>
+        <td class="num texto-verde">${dinero(fila.gananciaUnit)}</td>
+        <td class="num">${porcentaje(fila.margen)}</td>
         <td class="num">
-          <span class="badge ${row.esMedido1u ? 'badge-green' : 'badge-amber'}" title="${row.esMedido1u ? 'Medido real en N=1' : 'Piso mínimo estimado (100% prep.)'}">
-            ${row.esMedido1u ? '🟢' : '🟠'} ${fmtUYU(row.costoBase1u)}
+          <span class="etiqueta ${fila.medido1u ? 'etiqueta-verde' : 'etiqueta-alerta'}">
+            ${fila.medido1u ? '🟢' : '🟠'} ${dinero(fila.costo1u)}
           </span>
         </td>
-        <td class="num">${fmtUYU(row.precioVenta1u)}</td>
-        <td class="center"><span class="badge badge-blue">${escHtml(row.puntoEquilibrio)}</span></td>
-        <td class="center">
-          <button class="btn btn-danger" onclick="deleteRegistro(${row.id})" title="Eliminar fila">🗑️</button>
-        </td>
-      </tr>
-    `;
-  }).join('');
+        <td class="num">${dinero(fila.precio1u)}</td>
+        <td class="centrado"><span class="etiqueta etiqueta-azul">${esc(fila.puntoEquilibrio)}</span></td>
+        <td class="centrado"><button type="button" class="boton boton-peligro" data-action="borrar-registro" data-id="${fila.id}" title="Eliminar fila">✕</button></td>
+      </tr>`;
+  }).join('') || `<tr><td colspan="19" class="vacio">No hay artículos en el catálogo.</td></tr>`;
 }
 
-async function updateArticuloNombre(idArticulo, nuevoNombre) {
-  const clean = String(nuevoNombre || '').trim();
-  if (!clean) {
-    showToast('⚠️ El nombre del artículo no puede quedar vacío');
-    await refreshAll();
-    return;
-  }
-  try {
-    await DB3D.updateArticuloNombre(idArticulo, clean);
-    await refreshAll();
-    showToast(`Nombre de ${idArticulo} actualizado`);
-  } catch (err) {
-    showToast('⚠️ Ya existe otro artículo con ese nombre');
-    await refreshAll();
-  }
-}
+async function manejarArticulo(evento) {
+  evento.preventDefault();
+  const nombre = document.getElementById('art-nombre').value.trim();
+  const cantidad = Math.max(1, Math.floor(Number(document.getElementById('art-cantidad').value) || 1));
+  const factor = Number(document.getElementById('art-factor').value) || 2.5;
+  const gramos = Number(document.getElementById('art-gramos').value) || 0;
 
-async function updateRegistroCantidad(id, nuevaCant) {
-  try {
-    const cant = Math.max(1, Math.floor(Number(nuevaCant) || 1));
-    await DB3D.updateRegistroCosto(id, { cantidad: cant });
-    await refreshAll();
-    showToast('Cantidad actualizada en Supabase');
-  } catch (err) {
-    showToast('❌ Error: ' + err.message);
+  const tiempos = {
+    impresion: Calc.aHoras(document.getElementById('art-impresion').value),
+    preparacion: Calc.aHoras(document.getElementById('art-preparacion').value),
+    post: Calc.aHoras(document.getElementById('art-post').value)
+  };
+  for (const [nombreTiempo, horas] of Object.entries(tiempos)) {
+    if (horas === null) continue;
+    if (!Number.isFinite(horas) || horas < 0) {
+      avisar(`⚠️ Tiempo de ${nombreTiempo} inválido. Usá hh:mm (ej: 02:30)`, 'error');
+      return;
+    }
   }
-}
-
-async function updateRegistroFactor(id, nuevoFactor) {
-  try {
-    await DB3D.updateRegistroCosto(id, { factor_multiplicador: Number(nuevoFactor) });
-    await refreshAll();
-    showToast('Factor multiplicador actualizado');
-  } catch (err) {
-    showToast('❌ Error: ' + err.message);
-  }
-}
-
-async function deleteRegistro(id) {
-  try {
-    await DB3D.deleteRegistroCosto(id);
-    await refreshAll();
-    showToast('Fila eliminada de Artículos');
-  } catch (err) {
-    showToast('❌ Error: ' + err.message);
-  }
-}
-
-async function handleAddRegistro(e) {
-  e.preventDefault();
-  const nombreRaw = document.getElementById('reg-art').value.trim();
-  const cantidad = Math.max(1, Math.floor(Number(document.getElementById('reg-cant').value) || 1));
-  const factor = Number(document.getElementById('reg-factor').value) || 2.5;
-  const gramos = Number(document.getElementById('reg-gramos').value) || 0;
-
-  const impStr = document.getElementById('reg-imp').value.trim();
-  const prepStr = document.getElementById('reg-prep').value.trim();
-  const postStr = document.getElementById('reg-post').value.trim();
-
-  const impH = Engine3D.hhmmToHours(impStr);
-  const prepH = Engine3D.hhmmToHours(prepStr);
-  const postH = Engine3D.hhmmToHours(postStr);
-
-  if (!nombreRaw) return;
-  if (impStr && !Number.isFinite(impH)) {
-    showToast('⚠️ Tiempo de impresión inválido. Usá formato hh:mm');
-    return;
-  }
-  if (prepStr && !Number.isFinite(prepH)) {
-    showToast('⚠️ Tiempo de preparación inválido. Usá formato hh:mm');
-    return;
-  }
-  if (postStr && !Number.isFinite(postH)) {
-    showToast('⚠️ Tiempo de postprocesado inválido. Usá formato hh:mm');
-    return;
-  }
+  if (!nombre) return;
 
   try {
-    const artObj = await DB3D.getOrCreateArticulo(nombreRaw);
-
-    if (gramos > 0 && Number.isFinite(impH) && impH > 0) {
-      const fecha = new Date().toISOString().slice(0, 10);
-      await DB3D.insertEscalaReal({
-        fecha,
-        id_articulo: artObj.id_articulo,
+    const articulo = await DataStore.obtenerOCrearArticulo(nombre);
+    if (gramos > 0 && Number.isFinite(tiempos.impresion) && tiempos.impresion > 0) {
+      await DataStore.guardarMedicion({
+        fecha: hoyISO(),
+        articuloId: articulo.id,
         cantidad,
-        gramos_lote: gramos,
-        tiempo_impresion_lote_h: impH,
-        tiempo_preparacion_lote_h: Number.isFinite(prepH) ? prepH : 0,
-        tiempo_postprocesado_unit_h: Number.isFinite(postH) ? postH : 0,
-        factor_multiplicador: factor
+        gramos,
+        impresionH: tiempos.impresion,
+        preparacionH: Number.isFinite(tiempos.preparacion) ? tiempos.preparacion : 0,
+        postUnitH: Number.isFinite(tiempos.post) ? tiempos.post : 0,
+        factor
       });
     }
-
-    await DB3D.insertRegistroCosto(artObj.id_articulo, cantidad, factor);
-
-    e.target.reset();
-    document.getElementById('reg-cant').value = 1;
-    document.getElementById('reg-factor').value = '2.5';
-    await refreshAll();
-    showToast(`✅ Artículo ${artObj.id_articulo} (${artObj.nombre}) guardado en Supabase`);
-  } catch (err) {
-    showToast('❌ Error al guardar: ' + err.message);
+    await DataStore.agregarRegistro(articulo.id, cantidad, factor);
+    evento.target.reset();
+    document.getElementById('art-cantidad').value = 1;
+    document.getElementById('art-factor').value = '2.5';
+    await recargar();
+    avisar(`✅ ${articulo.codigo} — ${articulo.nombre} agregado al catálogo`, 'exito');
+  } catch (error) {
+    avisar(`❌ ${error.message}`, 'error');
   }
 }
 
-/* ============================================================================
-   2. TAB: COTIZADOR DINÁMICO Y CURVA DE ESCALA
-   ============================================================================ */
-function renderCotizador(articulos, escalasReales, params) {
-  const selArt = document.getElementById('cot-articulo');
-  const prevVal = selArt.value;
-  selArt.innerHTML = articulos.map(a =>
-    `<option value="${escHtml(a.id_articulo)}">${escHtml(a.id_articulo)} | ${escHtml(a.nombre)}</option>`
+/* ====================== MÓDULO 2: COTIZADOR ============================== */
+
+function cotizacionActual() {
+  const id = document.getElementById('cot-articulo').value;
+  const articulo = articuloPorId(id);
+  if (!articulo) return null;
+
+  const imp = Calc.aHoras(document.getElementById('cot-impresion').value);
+  const prep = Calc.aHoras(document.getElementById('cot-preparacion').value);
+
+  return Calc.cotizar({
+    articuloId: articulo.id,
+    codigo: articulo.codigo,
+    nombre: articulo.nombre,
+    cantidad: Number(document.getElementById('cot-cantidad').value) || 1,
+    factor: Number(document.getElementById('cot-factor').value) || 2.5,
+    gramosManual: Number(document.getElementById('cot-gramos').value) || 0,
+    impManualH: Number.isFinite(imp) ? imp : 0,
+    prepManualH: Number.isFinite(prep) ? prep : null
+  }, estado.datos.mediciones, estado.parametros);
+}
+
+function renderizarCotizador() {
+  const select = document.getElementById('cot-articulo');
+  const anterior = select.value;
+  select.innerHTML = estado.datos.articulos.map(a =>
+    `<option value="${a.id}">${esc(a.codigo)} | ${esc(a.nombre)}</option>`
   ).join('');
 
-  const ids = articulos.map(a => a.id_articulo);
-  if (prevVal && ids.includes(prevVal)) {
-    selArt.value = prevVal;
-  } else if (ids.includes('ART-006')) {
-    selArt.value = 'ART-006';
+  if (anterior && articuloPorId(anterior)) {
+    select.value = anterior;
+  } else {
+    const preferido = estado.datos.articulos.find(a => a.codigo === 'ART-006') || estado.datos.articulos[0];
+    if (preferido) select.value = preferido.id;
   }
+  actualizarCotizador();
+}
 
-  const idArticulo = selArt.value;
-  const artObj = articulos.find(a => a.id_articulo === idArticulo);
-  const nombreArticulo = artObj ? artObj.nombre : '';
-  const cantidad = Math.max(1, Math.floor(Number(document.getElementById('cot-cantidad').value) || 1));
-  const factor = Number(document.getElementById('cot-factor').value) || 3.0;
-  const manualGramos = Number(document.getElementById('cot-manual-gramos').value) || 0;
+function actualizarCotizador() {
+  const cot = cotizacionActual();
+  if (!cot) return;
+  estado.ultimaCotizacion = cot;
 
-  const impParsed = Engine3D.hhmmToHours(document.getElementById('cot-manual-imp').value);
-  const prepParsed = Engine3D.hhmmToHours(document.getElementById('cot-manual-prep').value);
-  const manualImpH = Number.isFinite(impParsed) ? impParsed : 0;
-  const manualPrepH = Number.isFinite(prepParsed) ? prepParsed : null;
+  const cls = cot.esReal ? 'etiqueta-verde' : 'etiqueta-alerta';
+  const estadoEl = document.getElementById('cot-estado');
+  estadoEl.textContent = cot.estado;
+  estadoEl.className = `etiqueta ${cls}`;
+  const origenEl = document.getElementById('cot-origen');
+  origenEl.textContent = cot.origen;
+  origenEl.className = `etiqueta ${cls}`;
 
-  const res = Engine3D.cotizarDinamico(
-    { idArticulo, nombreArticulo, cantidad, factor, manualGramos, manualImpH, manualPrepH },
-    escalasReales,
-    params
-  );
+  const poner = (id, texto) => { document.getElementById(id).textContent = texto; };
+  poner('cot-gramos-activos', `${cot.gramosActivos.toFixed(2)} g`);
+  poner('cot-impresion-activa', cot.impresionActivaHHMM);
+  poner('cot-prep-unit', `${cot.prepUnitHHMM} / u.`);
+  poner('cot-post-unit', `${cot.postUnitHHMM} / u.`);
+  poner('cot-tiempos', `${cot.tiempoUnitHHMM} / u. (${cot.tiempoLoteHHMM} lote)`);
+  poner('cot-costo-unit', dinero(cot.costoUnit));
+  poner('cot-costo-lote', dinero(cot.costoLote));
+  poner('cot-precio-unit', dinero(cot.precioUnit));
+  poner('cot-precio-lote', dinero(cot.precioLote));
+  poner('cot-ganancia', `${dinero(cot.gananciaUnit)} / u. (${dinero(cot.gananciaLote)} lote)`);
+  poner('cot-comp-1u', `${dinero(cot.compVenta1u)} (ref. suelta)`);
+  poner('cot-pe', cot.puntoEquilibrio);
 
-  const estadoBox = document.getElementById('cot-estado-historial');
-  estadoBox.className = 'badge ' + (res.esReal ? 'badge-green' : 'badge-amber');
-  estadoBox.textContent = res.estadoHistorial;
-
-  const origenBox = document.getElementById('cot-origen-datos');
-  origenBox.className = 'badge ' + (res.esReal ? 'badge-green' : 'badge-amber');
-  origenBox.textContent = res.origenTexto;
-
-  document.getElementById('cot-gramos').textContent = `${res.gramosActivos.toFixed(2)} g`;
-  document.getElementById('cot-imp-h').textContent = res.impActivoHHMM;
-  document.getElementById('cot-prep-u').textContent = `${res.prepUnitHHMM} / u.`;
-  document.getElementById('cot-post-u').textContent = `${res.postUnitHHMM} / u.`;
-  document.getElementById('cot-tiempo-total').textContent = `${res.tiempoTotalUnitHHMM} / u. (${res.tiempoTotalLoteHHMM} lote)`;
-  document.getElementById('cot-costo-unit').textContent = fmtUYU(res.costoBaseUnit);
-  document.getElementById('cot-costo-lote').textContent = fmtUYU(res.costoBaseLote);
-  document.getElementById('cot-precio-unit').textContent = fmtUYU(res.precioVentaUnit);
-  document.getElementById('cot-precio-lote').textContent = fmtUYU(res.precioVentaLote);
-  document.getElementById('cot-ganancia').textContent = `${fmtUYU(res.gananciaNetaUnit)} / u. (${fmtUYU(res.gananciaNetaLote)} lote)`;
-  document.getElementById('cot-comp-1u').textContent = `${fmtUYU(res.compVenta1u)} (ref. suelta)`;
-  document.getElementById('cot-pe').textContent = res.puntoEquilibrio;
-
-  // Tabla de escalas 1, 3, 5, 10, 20
-  const tbodyEsc = document.getElementById('tbody-cot-escalas');
-  tbodyEsc.innerHTML = res.tablaEscalas.map(s => `
+  document.getElementById('body-escalas').innerHTML = cot.escalas.map(e => `
     <tr>
-      <td class="num"><strong>${s.unidades} u.</strong></td>
-      <td><span class="badge ${s.esReal ? 'badge-green' : 'badge-amber'}">${s.origen}</span></td>
-      <td class="num">${fmtUYU(s.prepPorPieza)}</td>
-      <td class="num"><strong>${fmtUYU(s.costoBaseUnit)}</strong></td>
-      <td class="num" style="color: var(--accent); font-weight:700;">${fmtUYU(s.precioVentaUnit)}</td>
-      <td class="num">${fmtUYU(s.costoTotalLote)}</td>
-      <td class="center"><span class="badge badge-blue">${s.puntoEquilibrio}</span></td>
-    </tr>
-  `).join('');
+      <td class="num"><strong>${e.unidades} u.</strong></td>
+      <td><span class="etiqueta ${e.esReal ? 'etiqueta-verde' : 'etiqueta-alerta'}">${e.origen}</span></td>
+      <td class="num">${dinero(e.prepPieza)}</td>
+      <td class="num"><strong>${dinero(e.costoUnit)}</strong></td>
+      <td class="num texto-acento negrita">${dinero(e.precioUnit)}</td>
+      <td class="num">${dinero(e.costoLote)}</td>
+      <td class="centrado"><span class="etiqueta etiqueta-azul">${e.puntoEquilibrio}</span></td>
+    </tr>`).join('');
 
-  renderEscalaChart(res.tablaEscalas, `${idArticulo} | ${nombreArticulo}`);
+  dibujarGrafico(cot.escalas, `${cot.codigo} | ${cot.nombre}`);
 }
 
-async function guardarMedicionDesdeCotizador() {
-  const idArticulo = document.getElementById('cot-articulo').value;
-  const cantidad = Math.max(1, Math.floor(Number(document.getElementById('cot-cantidad').value) || 1));
-  const factor = Number(document.getElementById('cot-factor').value) || 2.5;
-  const gramos = Number(document.getElementById('cot-manual-gramos').value);
-  const impH = Engine3D.hhmmToHours(document.getElementById('cot-manual-imp').value);
-  const prepParsed = Engine3D.hhmmToHours(document.getElementById('cot-manual-prep').value);
-  const prepH = Number.isFinite(prepParsed) ? prepParsed : 0;
+function dibujarGrafico(escalas, etiqueta) {
+  if (typeof Chart === 'undefined') return;
+  const lienzo = document.getElementById('grafico-escalas');
+  if (!lienzo) return;
+  if (estado.grafico) estado.grafico.destroy();
 
-  if (!idArticulo || gramos <= 0 || !Number.isFinite(impH) || impH <= 0) {
-    showToast('⚠️ Ingresá Gramos y Tiempo de Impresión (hh:mm) válidos');
-    return;
-  }
-
-  try {
-    const fecha = new Date().toISOString().slice(0, 10);
-    await DB3D.upsertEscalaReal({
-      fecha,
-      id_articulo: idArticulo,
-      cantidad,
-      gramos_lote: gramos,
-      tiempo_impresion_lote_h: impH,
-      tiempo_preparacion_lote_h: prepH,
-      tiempo_postprocesado_unit_h: 0,
-      factor_multiplicador: factor
-    });
-
-    document.getElementById('cot-manual-gramos').value = '';
-    document.getElementById('cot-manual-imp').value = '';
-    document.getElementById('cot-manual-prep').value = '';
-    await refreshAll();
-    showToast(`✅ Medición real guardada para ${idArticulo} (${cantidad} u.)`);
-  } catch (err) {
-    showToast('❌ Error: ' + err.message);
-  }
-}
-
-function renderEscalaChart(tablaEscalas, articuloLabel) {
-  const ctx = document.getElementById('chart-escalas');
-  if (!ctx || typeof Chart === 'undefined') return;
-
-  const labels = tablaEscalas.map(s => `${s.unidades} u.`);
-  const costos = tablaEscalas.map(s => s.costoBaseUnit);
-  const precios = tablaEscalas.map(s => s.precioVentaUnit);
-
-  if (escalaChart) {
-    escalaChart.destroy();
-  }
-
-  escalaChart = new Chart(ctx, {
+  estado.grafico = new Chart(lienzo, {
     type: 'line',
     data: {
-      labels,
+      labels: escalas.map(e => `${e.unidades} u.`),
       datasets: [
         {
-          label: 'Costo Base Unitario ($ UYU)',
-          data: costos,
-          borderColor: '#f59e0b',
-          backgroundColor: 'rgba(245, 158, 11, 0.15)',
-          tension: 0.25,
-          fill: true,
-          borderWidth: 2.5
+          label: 'Costo base unitario ($ UYU)',
+          data: escalas.map(e => e.costoUnit),
+          borderColor: '#f0a742',
+          backgroundColor: 'rgba(240,167,66,.14)',
+          tension: .28, fill: true, borderWidth: 2.5, pointRadius: 3
         },
         {
-          label: 'Precio de Venta Unitario ($ UYU)',
-          data: precios,
-          borderColor: '#06b6d4',
-          backgroundColor: 'rgba(6, 182, 212, 0.15)',
-          tension: 0.25,
-          fill: true,
-          borderWidth: 2.5
+          label: 'Precio de venta unitario ($ UYU)',
+          data: escalas.map(e => e.precioUnit),
+          borderColor: '#31d1e8',
+          backgroundColor: 'rgba(49,209,232,.12)',
+          tension: .28, fill: true, borderWidth: 2.5, pointRadius: 3
         }
       ]
     },
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
+      responsive: true, maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
       plugins: {
-        legend: { labels: { color: '#f1f5f9' } },
-        title: {
-          display: true,
-          text: `Curva de Costo Base vs. Precio de Venta (${articuloLabel})`,
-          color: '#f1f5f9'
-        }
+        legend: { labels: { color: '#cbd5e1', usePointStyle: true } },
+        title: { display: true, text: `Costo vs. precio por escala — ${etiqueta}`, color: '#e2e8f0' }
       },
       scales: {
-        x: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(51,65,85,0.4)' } },
-        y: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(51,65,85,0.4)' } }
+        x: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(148,163,184,.12)' } },
+        y: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(148,163,184,.12)' } }
       }
     }
   });
 }
 
-/* ============================================================================
-   3. TAB: ARMADOR DINÁMICO DE COMBOS POR PRESUPUESTO
-   ============================================================================ */
-function renderCombos(registroCalc, escalasReales, params, combosGuardados) {
-  const calc = Engine3D.calcularCombos(
-    comboState.presupuesto,
-    comboState.factorGlobal,
-    comboState.lineas,
-    registroCalc,
-    escalasReales,
-    params
-  );
-
-  // Tabla de artículos incluidos en el combo
-  const tbodyItems = document.getElementById('tbody-combo-items');
-  tbodyItems.innerHTML = comboState.lineas.map((linea, idx) => {
-    const itemCalc = calc.items.find(x => x.slotIndex === idx);
-    return `
-      <tr>
-        <td>
-          <select class="inline-select" style="min-width: 220px;" onchange="updateComboLineaArt(${idx}, this.value)">
-            <option value="">-- Seleccionar artículo --</option>
-            ${registroCalc.map(r => `<option value="${escHtml(r.id_articulo)}" ${linea.id_articulo === r.id_articulo ? 'selected' : ''}>${escHtml(r.id_articulo)} | ${escHtml(r.nombre_articulo)}</option>`).join('')}
-          </select>
-        </td>
-        <td class="num">${itemCalc ? itemCalc.factorAplicado.toFixed(1) + 'x' : '-'}</td>
-        <td class="num">${itemCalc ? fmtUYU(itemCalc.costoRef1u) : '-'}</td>
-        <td class="num">${itemCalc ? fmtUYU(itemCalc.precioRef1u) : '-'}</td>
-        <td class="num"><span class="badge badge-blue">${itemCalc ? itemCalc.op1 : 0}</span></td>
-        <td class="num"><span class="badge badge-green">${itemCalc ? itemCalc.op2 : 0}</span></td>
-        <td class="num"><span class="badge badge-amber">${itemCalc ? itemCalc.op3 : 0}</span></td>
-        <td class="num">
-          <input type="number" class="inline-input" min="0" step="1" value="${linea.manualCant}"
-            onchange="updateComboLineaManual(${idx}, this.value)">
-        </td>
-        <td class="center">
-          <button class="btn btn-danger" onclick="removeComboLinea(${idx})">✕</button>
-        </td>
-      </tr>
-    `;
-  }).join('');
-
-  // Tabla de Opciones Calculadas
-  window.__lastComboOpciones = calc.opciones;
-  const tbodyOpc = document.getElementById('tbody-combo-opciones');
-  tbodyOpc.innerHTML = calc.opciones.map((op, i) => `
-    <tr>
-      <td><strong>${escHtml(op.nombre)}</strong></td>
-      <td style="max-width: 340px;">${escHtml(op.composicion)}</td>
-      <td class="num"><strong>${op.totalPiezas} u.</strong></td>
-      <td class="num" style="color: var(--accent); font-weight: 700;">${fmtUYU(op.precioVenta)}</td>
-      <td class="num">${fmtUYU(op.costoProduccion)}</td>
-      <td class="num" style="color: var(--green-text); font-weight: 700;">${fmtUYU(op.gananciaNeta)}</td>
-      <td class="num" style="color: ${op.saldoPresupuesto >= 0 ? 'var(--green-text)' : 'var(--red-text)'};">
-        ${fmtUYU(op.saldoPresupuesto)}
-      </td>
-      <td class="num">${op.tiempoTotalHHMM}</td>
-      <td><span class="badge ${op.esReal ? 'badge-green' : 'badge-amber'}">${escHtml(op.origen)}</span></td>
-      <td class="center">
-        <button class="btn btn-success btn-sm" onclick="guardarComboEnHistorial(${i})">💾 Guardar</button>
-      </td>
-    </tr>
-  `).join('');
-
-  // Tabla de Historial de Combos Guardados
-  const tbodyHist = document.getElementById('tbody-combo-historial');
-  tbodyHist.innerHTML = combosGuardados.map(c => `
-    <tr>
-      <td>${escHtml(c.fecha)}</td>
-      <td>
-        <input type="text" class="inline-name-input" value="${escHtml(c.nombre_combo || c.opcion_elegida)}"
-          onchange="updateComboNombre(${c.id}, this.value)" title="Editar nombre del combo">
-      </td>
-      <td class="num">${fmtUYU(c.presupuesto)}</td>
-      <td>${escHtml(c.opcion_elegida)}</td>
-      <td style="max-width: 360px;">${escHtml(c.composicion)}</td>
-      <td class="num" style="color: var(--accent); font-weight: 700;">${fmtUYU(c.precio_venta)}</td>
-      <td class="num">${fmtUYU(c.costo_produccion)}</td>
-      <td class="num">${fmtUYU(c.saldo_presupuesto)}</td>
-      <td><span class="badge badge-green">${escHtml(c.estado)}</span></td>
-      <td class="center">
-        <button class="btn btn-danger" onclick="deleteComboGuardado(${c.id})">🗑️</button>
-      </td>
-    </tr>
-  `).join('');
-}
-
-async function updateComboConfig() {
-  comboState.presupuesto = Math.max(0, Number(document.getElementById('cmb-presupuesto').value) || 0);
-  comboState.factorGlobal = document.getElementById('cmb-factor').value;
-  await refreshAll();
-}
-
-async function addComboLinea() {
-  if (comboState.lineas.length >= 10) {
-    showToast('Máximo 10 artículos por combo');
+async function guardarMedicionDelCotizador() {
+  const cot = estado.ultimaCotizacion;
+  if (!cot) return;
+  const gramos = Number(document.getElementById('cot-gramos').value) || 0;
+  const imp = Calc.aHoras(document.getElementById('cot-impresion').value);
+  if (gramos <= 0 || !Number.isFinite(imp) || imp <= 0) {
+    avisar('⚠️ Ingresá gramos y tiempo de impresión válidos', 'error');
     return;
   }
-  comboState.lineas.push({ id_articulo: '', manualCant: 1 });
-  await refreshAll();
-}
-
-async function removeComboLinea(idx) {
-  comboState.lineas.splice(idx, 1);
-  await refreshAll();
-}
-
-async function updateComboLineaArt(idx, idArt) {
-  comboState.lineas[idx].id_articulo = idArt;
-  await refreshAll();
-}
-
-async function updateComboLineaManual(idx, cant) {
-  comboState.lineas[idx].manualCant = Math.max(0, Math.floor(Number(cant) || 0));
-  await refreshAll();
-}
-
-async function guardarComboEnHistorial(opcionIdx) {
-  const op = (window.__lastComboOpciones || [])[opcionIdx];
-  if (!op || op.totalPiezas <= 0) {
-    showToast('⚠️ Seleccioná artículos válidos antes de guardar');
-    return;
-  }
-
-  const inputNombre = document.getElementById('cmb-nombre');
-  let nombreCombo = inputNombre ? inputNombre.value.trim() : '';
-  if (!nombreCombo) {
-    const sugerido = `Combo ${op.nombre}`;
-    const ingresado = prompt('Ingresá un nombre para este combo:', sugerido);
-    if (ingresado === null) return;
-    nombreCombo = ingresado.trim() || sugerido;
-  }
-
   try {
-    const fecha = new Date().toISOString().slice(0, 10);
-    await DB3D.insertComboGuardado({
-      fecha,
-      nombre_combo: nombreCombo,
-      presupuesto: comboState.presupuesto,
-      opcion_elegida: op.nombre,
-      composicion: op.composicion,
-      precio_venta: op.precioVenta,
-      costo_produccion: op.costoProduccion,
-      saldo_presupuesto: op.saldoPresupuesto,
-      estado: '✅ Guardado'
+    await DataStore.guardarMedicion({
+      fecha: hoyISO(),
+      articuloId: cot.articuloId,
+      cantidad: cot.cantidad,
+      gramos,
+      impresionH: imp,
+      preparacionH: Number.isFinite(Calc.aHoras(document.getElementById('cot-preparacion').value))
+        ? Calc.aHoras(document.getElementById('cot-preparacion').value) : 0,
+      postUnitH: 0,
+      factor: cot.factor
     });
-
-    if (inputNombre) inputNombre.value = '';
-    await refreshAll();
-    showToast(`✅ Combo "${nombreCombo}" guardado en Supabase`);
-  } catch (err) {
-    showToast('❌ Error: ' + err.message);
+    ['cot-gramos', 'cot-impresion', 'cot-preparacion'].forEach(id => { document.getElementById(id).value = ''; });
+    await recargar();
+    avisar(`✅ Medición guardada para ${cot.codigo} (${cot.cantidad} u.)`, 'exito');
+  } catch (error) {
+    avisar(`❌ ${error.message}`, 'error');
   }
 }
 
-async function updateComboNombre(id, nuevoNombre) {
-  const clean = String(nuevoNombre || '').trim();
-  if (!clean) {
-    await refreshAll();
-    return;
-  }
-  try {
-    await DB3D.updateComboNombre(id, clean);
-    await refreshAll();
-    showToast('Nombre del combo actualizado');
-  } catch (err) {
-    showToast('❌ Error: ' + err.message);
-  }
+/* ======================== MÓDULO 3: COMBOS =============================== */
+
+function calcularCombos() {
+  const resultado = Calc.calcularCombos(
+    estado.combo.presupuesto,
+    estado.combo.factor,
+    estado.combo.lineas,
+    estado.filasCalculadas,
+    estado.datos.mediciones,
+    estado.parametros
+  );
+  estado.combo.opciones = resultado.opciones;
+  estado.combo.items = resultado.items;
+  return resultado;
 }
 
-async function deleteComboGuardado(id) {
-  try {
-    await DB3D.deleteComboGuardado(id);
-    await refreshAll();
-    showToast('Combo eliminado del historial');
-  } catch (err) {
-    showToast('❌ Error: ' + err.message);
-  }
-}
+function renderizarCombos() {
+  const resultado = calcularCombos();
 
-/* ============================================================================
-   4. TAB: GESTIÓN DE CLIENTES Y PEDIDOS (Multi-artículo + Combos Guardados)
-   ============================================================================ */
-function renderPedidos(pedidos, pedidoItems, registroCalc, combosGuardados) {
-  window.__lastRegistroCalc = registroCalc;
-  window.__lastCombosGuardados = combosGuardados;
-
-  const itemsPorPedido = new Map();
-  for (const it of pedidoItems) {
-    if (!itemsPorPedido.has(it.pedido_id)) itemsPorPedido.set(it.pedido_id, []);
-    itemsPorPedido.get(it.pedido_id).push(it);
-  }
-
-  let totalFacturado = 0;
-  let totalEnCurso = 0;
-
-  for (const p of pedidos) {
-    const items = itemsPorPedido.get(p.id) || [];
-    const totalPed = items.reduce(
-      (acc, it) => acc + Engine3D.excelRound(Number(it.cantidad) * Number(it.precio_unitario), 2),
-      0
-    );
-    if (p.estado === 'Entregado') totalFacturado += totalPed;
-    if (p.estado === 'Pendiente' || p.estado === 'En Producción' || p.estado === 'Listo para Entrega') {
-      totalEnCurso += totalPed;
-    }
-  }
-
-  document.getElementById('kpi-ped-total').textContent = pedidos.length;
-  document.getElementById('kpi-ped-entregado').textContent = fmtUYU(totalFacturado);
-  document.getElementById('kpi-ped-curso').textContent = fmtUYU(totalEnCurso);
-
-  renderPedidoDraft(registroCalc, combosGuardados);
-
-  const estados = ['Pendiente', 'En Producción', 'Listo para Entrega', 'Entregado', 'Cancelado'];
-  const tbody = document.getElementById('tbody-pedidos');
-  tbody.innerHTML = pedidos.map(p => {
-    const items = itemsPorPedido.get(p.id) || [];
-    const totalPedido = items.reduce(
-      (acc, it) => acc + Engine3D.excelRound(Number(it.cantidad) * Number(it.precio_unitario), 2),
-      0
-    );
-
-    const detalleHtml = items.map(it => {
-      const esCombo = it.tipo_item === 'combo';
-      const badgeClass = esCombo ? 'badge-amber' : 'badge-blue';
-      const badgeLabel = esCombo ? `🎁 ${escHtml(it.ref_id)}` : escHtml(it.ref_id);
-      const subItem = Engine3D.excelRound(Number(it.cantidad) * Number(it.precio_unitario), 2);
-      return `
-        <div class="pedido-item-chip">
-          <span class="badge ${badgeClass}">${badgeLabel}</span>
-          <strong>${escHtml(it.descripcion)}</strong>
-          <span style="color:var(--text-muted);">×</span>
-          <input type="number" class="inline-input" style="width:62px;" min="1" step="1" value="${it.cantidad}"
-            onchange="updatePedidoItemCant(${it.id}, this.value)" title="Cantidad">
-          <span style="color:var(--text-muted);">@</span>
-          <input type="number" class="inline-input" style="width:84px;" min="0" step="0.01" value="${Number(it.precio_unitario).toFixed(2)}"
-            onchange="updatePedidoItemPrecio(${it.id}, this.value)" title="Precio unitario">
-          <span style="color:var(--accent); font-weight:700;">= ${fmtUYU(subItem)}</span>
-          ${items.length > 1 ? `<button type="button" class="btn btn-danger" style="padding:0.15rem 0.4rem;" onclick="deletePedidoItem(${it.id})" title="Quitar ítem">✕</button>` : ''}
-        </div>
-      `;
-    }).join('');
-
+  document.getElementById('body-combo-lineas').innerHTML = estado.combo.lineas.map((linea, i) => {
+    const item = resultado.items.find(x => x.slot === i);
     return `
       <tr>
-        <td><strong>${escHtml(p.id)}</strong></td>
-        <td>${escHtml(p.fecha)}</td>
-        <td><strong>${escHtml(p.cliente)}</strong></td>
-        <td><div class="pedido-items-list">${detalleHtml || '<span style="color:var(--text-muted);">Sin ítems</span>'}</div></td>
-        <td class="num" style="color: var(--accent); font-weight: 800; font-size:0.95rem;">${fmtUYU(totalPedido)}</td>
         <td>
-          <select class="inline-select" onchange="updatePedidoEstado('${escHtml(p.id)}', this.value)">
-            ${estados.map(est => `<option value="${est}" ${p.estado === est ? 'selected' : ''}>${est}</option>`).join('')}
+          <select class="entrada-inline ancho-220" data-campo="combo-linea-art" data-indice="${i}">
+            <option value="">— Seleccionar artículo —</option>
+            ${estado.filasCalculadas.map(f =>
+              `<option value="${f.articuloId}" ${String(linea.articuloId) === String(f.articuloId) ? 'selected' : ''}>${esc(f.etiqueta)}</option>`
+            ).join('')}
           </select>
         </td>
-        <td class="center">
-          <button class="btn btn-danger" onclick="deletePedido('${escHtml(p.id)}')">🗑️</button>
-        </td>
-      </tr>
-    `;
-  }).join('');
+        <td class="num">${item ? item.factorAplicado.toFixed(1) + '×' : '—'}</td>
+        <td class="num">${item ? dinero(item.costoBase1u) : '—'}</td>
+        <td class="num">${item ? dinero(item.precioRef1u) : '—'}</td>
+        <td class="num"><span class="etiqueta etiqueta-azul">${item ? item.op1 : 0}</span></td>
+        <td class="num"><span class="etiqueta etiqueta-verde">${item ? item.op2 : 0}</span></td>
+        <td class="num"><span class="etiqueta etiqueta-alerta">${item ? item.op3 : 0}</span></td>
+        <td class="num"><input type="number" class="entrada-inline" min="0" step="1" value="${linea.manualCant}"
+              data-campo="combo-linea-manual" data-indice="${i}"></td>
+        <td class="centrado"><button type="button" class="boton boton-peligro" data-action="quitar-linea-combo" data-indice="${i}">✕</button></td>
+      </tr>`;
+  }).join('') || `<tr><td colspan="9" class="vacio">Agregá artículos al combo.</td></tr>`;
+
+  document.getElementById('body-combo-opciones').innerHTML = resultado.opciones.map((op, i) => `
+    <tr>
+      <td><strong>${esc(op.nombre)}</strong></td>
+      <td class="composicion">${esc(op.composicion)}</td>
+      <td class="num"><strong>${op.totalPiezas} u.</strong></td>
+      <td class="num texto-acento negrita">${dinero(op.precioVenta)}</td>
+      <td class="num">${dinero(op.costoProduccion)}</td>
+      <td class="num texto-verde negrita">${dinero(op.gananciaNeta)}</td>
+      <td class="num" style="color:${op.saldo >= 0 ? 'var(--verde)' : 'var(--rojo)'}">${dinero(op.saldo)}</td>
+      <td class="num">${op.tiempoTotalHHMM}</td>
+      <td><span class="etiqueta ${op.esReal ? 'etiqueta-verde' : 'etiqueta-alerta'}">${esc(op.origen)}</span></td>
+      <td class="centrado"><button type="button" class="boton boton-exito boton-pequeno" data-action="guardar-combo" data-indice="${i}">💾 Guardar</button></td>
+    </tr>`).join('');
+
+  document.getElementById('body-combo-historial').innerHTML = estado.datos.combos.map(c => `
+    <tr>
+      <td>${esc(c.fecha)}</td>
+      <td><input class="entrada-inline nombre-inline" value="${esc(c.nombre)}"
+            data-campo="combo-nombre" data-id="${c.id}"></td>
+      <td class="num">${dinero(c.presupuesto)}</td>
+      <td>${esc(c.opcion)}</td>
+      <td class="composicion">${esc(c.composicion)}</td>
+      <td class="num texto-acento negrita">${dinero(c.precioVenta)}</td>
+      <td class="num">${dinero(c.costoProduccion)}</td>
+      <td class="num">${dinero(c.saldo)}</td>
+      <td><span class="etiqueta etiqueta-verde">${esc(c.estado)}</span></td>
+      <td class="centrado"><button type="button" class="boton boton-peligro" data-action="borrar-combo" data-id="${c.id}">✕</button></td>
+    </tr>`).join('') || `<tr><td colspan="10" class="vacio">Todavía no guardaste combos.</td></tr>`;
 }
 
-function renderPedidoDraft(registroCalc, combosGuardados) {
-  const tbody = document.getElementById('tbody-ped-draft');
+function actualizarCombos() {
+  estado.combo.presupuesto = Math.max(0, Number(document.getElementById('cmb-presupuesto').value) || 0);
+  estado.combo.factor = document.getElementById('cmb-factor').value;
+  renderizarCombos();
+}
+
+async function guardarComboEnHistorial(indice) {
+  const op = estado.combo.opciones[indice];
+  if (!op || op.totalPiezas <= 0) {
+    avisar('⚠️ Seleccioná artículos válidos antes de guardar', 'error');
+    return;
+  }
+  const campoNombre = document.getElementById('cmb-nombre');
+  let nombre = campoNombre.value.trim();
+  if (!nombre) {
+    const sugerido = `Combo ${op.nombre}`;
+    const ingresado = prompt('Nombre para este combo:', sugerido);
+    if (ingresado === null) return;
+    nombre = ingresado.trim() || sugerido;
+  }
+
+  const items = estado.combo.items
+    .filter(x => x[op.clave] > 0)
+    .map(x => ({
+      articuloId: x.articuloId,
+      cantidad: x[op.clave],
+      descripcion: `${x.nombre} (${x.codigo})`,
+      precioUnitario: Calc.round(x.fila.costoUnit * x.factorAplicado, 2)
+    }));
+
+  try {
+    await DataStore.guardarCombo({
+      nombre, fecha: hoyISO(), presupuesto: estado.combo.presupuesto,
+      opcion: op.nombre, composicion: op.composicion,
+      precioVenta: op.precioVenta, costoProduccion: op.costoProduccion, saldo: op.saldo
+    }, items);
+    campoNombre.value = '';
+    await recargar();
+    avisar(`✅ Combo "${nombre}" guardado`, 'exito');
+  } catch (error) {
+    avisar(`❌ ${error.message}`, 'error');
+  }
+}
+
+/* ===================== MÓDULO 4: PEDIDOS ================================= */
+
+function totalPedido(pedido) {
+  return pedido.items.reduce((suma, it) =>
+    suma + Calc.round(Number(it.cantidad) * Number(it.precioUnitario), 2), 0);
+}
+
+function renderizarPedidos() {
+  let facturado = 0, enCurso = 0;
+  for (const p of estado.datos.pedidos) {
+    const total = totalPedido(p);
+    if (p.estado === 'Entregado') facturado += total;
+    if (['Pendiente', 'En Producción', 'Listo para Entrega'].includes(p.estado)) enCurso += total;
+  }
+  document.getElementById('kpi-total').textContent = estado.datos.pedidos.length;
+  document.getElementById('kpi-entregado').textContent = dinero(facturado);
+  document.getElementById('kpi-curso').textContent = dinero(enCurso);
+
+  dibujarBorradorPedido();
+
+  document.getElementById('body-pedidos').innerHTML = estado.datos.pedidos.map(p => `
+    <tr>
+      <td><strong>${esc(p.codigo)}</strong></td>
+      <td>${esc(p.fecha)}</td>
+      <td><strong>${esc(p.cliente)}</strong></td>
+      <td>
+        <div class="lista-items">
+          ${p.items.map(it => `
+            <div class="chip-item">
+              <span class="etiqueta ${it.tipo === 'combo' ? 'etiqueta-alerta' : 'etiqueta-azul'}">
+                ${it.tipo === 'combo' ? '◈' : '▣'} ${esc(it.articuloId ? (articuloPorId(it.articuloId)?.codigo || it.descripcion) : (comboPorId(it.comboId)?.nombre || it.descripcion))}
+              </span>
+              <strong>${esc(it.descripcion)}</strong> ×
+              <input type="number" class="entrada-inline corta" min="1" step="1" value="${it.cantidad}"
+                     data-campo="ped-item-cant" data-id="${it.id}" title="Cantidad">
+              @
+              <input type="number" class="entrada-inline media" min="0" step="0.01" value="${Number(it.precioUnitario).toFixed(2)}"
+                     data-campo="ped-item-precio" data-id="${it.id}" title="Precio unitario">
+              <span class="texto-acento negrita">= ${dinero(it.cantidad * it.precioUnitario)}</span>
+              ${p.items.length > 1 ? `<button type="button" class="boton boton-peligro" data-action="borrar-item-pedido" data-id="${it.id}">✕</button>` : ''}
+            </div>`).join('') || '<span class="texto-suave">Sin ítems</span>'}
+        </div>
+      </td>
+      <td class="num negrita texto-acento">${dinero(totalPedido(p))}</td>
+      <td>
+        <select class="entrada-inline" data-campo="ped-estado" data-id="${p.id}">
+          ${ESTADOS_PEDIDO.map(e => `<option ${p.estado === e ? 'selected' : ''}>${e}</option>`).join('')}
+        </select>
+      </td>
+      <td class="centrado"><button type="button" class="boton boton-peligro" data-action="borrar-pedido" data-id="${p.id}">🗑</button></td>
+    </tr>`).join('') || `<tr><td colspan="7" class="vacio">No hay pedidos registrados.</td></tr>`;
+}
+
+function dibujarBorradorPedido() {
+  const tbody = document.getElementById('body-ped-draft');
   if (!tbody) return;
+  let total = 0, piezas = 0, validos = 0;
 
-  let totalDraft = 0;
-  let totalPiezas = 0;
-  let validos = 0;
+  tbody.innerHTML = estado.borradorPedido.map((linea, i) => {
+    const subtotal = Calc.round((linea.cantidad || 1) * (linea.precioUnitario || 0), 2);
+    if (linea.refId) { total += subtotal; piezas += Number(linea.cantidad || 1); validos++; }
 
-  tbody.innerHTML = pedidoDraftLineas.map((linea, idx) => {
-    const sub = Engine3D.excelRound(Number(linea.cantidad || 1) * Number(linea.precioUnitario || 0), 2);
-    if (linea.refId) {
-      totalDraft += sub;
-      totalPiezas += Number(linea.cantidad || 1);
-      validos += 1;
-    }
-
-    const opcionesHtml = linea.tipo === 'combo'
-      ? `<option value="">-- Elegir combo guardado --</option>` +
-        combosGuardados.map(c => {
-          const val = `CMB-${c.id}`;
-          const label = `🎁 ${c.nombre_combo || c.opcion_elegida} (${fmtUYU(c.precio_venta)}) — ${c.composicion}`;
-          return `<option value="${val}" ${linea.refId === val ? 'selected' : ''}>${escHtml(label)}</option>`;
+    const opciones = linea.tipo === 'combo'
+      ? `<option value="">— Elegir combo guardado —</option>` + estado.datos.combos.map(c => {
+          const valor = `CMB-${c.id}`;
+          const texto = `◈ ${c.nombre} (${dinero(c.precioVenta)}) — ${c.composicion}`;
+          return `<option value="${valor}" ${linea.refId === valor ? 'selected' : ''}>${esc(texto)}</option>`;
         }).join('')
-      : `<option value="">-- Elegir artículo del catálogo --</option>` +
-        registroCalc.map(r => {
-          const label = `${r.id_articulo} | ${r.nombre_articulo} (${fmtUYU(r.precioVentaUnit)} / u.)`;
-          return `<option value="${escHtml(r.id_articulo)}" ${linea.refId === r.id_articulo ? 'selected' : ''}>${escHtml(label)}</option>`;
+      : `<option value="">— Elegir artículo del catálogo —</option>` + estado.filasCalculadas.map(f => {
+          const texto = `${f.codigo} | ${f.nombre} (${dinero(f.precioUnit)} / u.)`;
+          return `<option value="${f.articuloId}" ${String(linea.refId) === String(f.articuloId) ? 'selected' : ''}>${esc(texto)}</option>`;
         }).join('');
 
     return `
       <tr>
         <td>
-          <select class="inline-select" onchange="changePedidoDraftTipo(${idx}, this.value)">
-            <option value="articulo" ${linea.tipo === 'articulo' ? 'selected' : ''}>📦 Artículo</option>
-            <option value="combo" ${linea.tipo === 'combo' ? 'selected' : ''}>🎁 Combo</option>
+          <select class="entrada-inline" data-campo="ped-tipo" data-indice="${i}">
+            <option value="articulo" ${linea.tipo === 'articulo' ? 'selected' : ''}>▣ Artículo</option>
+            <option value="combo" ${linea.tipo === 'combo' ? 'selected' : ''}>◈ Combo</option>
           </select>
         </td>
-        <td>
-          <select style="width:100%;" onchange="selectPedidoDraftItem(${idx}, this.value)">
-            ${opcionesHtml}
-          </select>
-        </td>
-        <td class="num">
-          <input type="number" class="inline-input" min="1" step="1" value="${linea.cantidad}"
-            onchange="updatePedidoDraftCant(${idx}, this.value)">
-        </td>
-        <td class="num">
-          <input type="number" class="inline-input" style="width:105px;" min="0" step="0.01" value="${Number(linea.precioUnitario).toFixed(2)}"
-            onchange="updatePedidoDraftPrecio(${idx}, this.value)">
-        </td>
-        <td class="num" style="color:var(--accent); font-weight:700;">${fmtUYU(sub)}</td>
-        <td class="center">
-          <button type="button" class="btn btn-danger" onclick="removePedidoDraftLinea(${idx})" title="Quitar línea">✕</button>
-        </td>
-      </tr>
-    `;
+        <td><select class="ancho-total" data-campo="ped-ref" data-indice="${i}">${opciones}</select></td>
+        <td class="num"><input type="number" class="entrada-inline" min="1" step="1" value="${linea.cantidad}"
+              data-campo="ped-cant" data-indice="${i}"></td>
+        <td class="num"><input type="number" class="entrada-inline media" min="0" step="0.01" value="${Number(linea.precioUnitario).toFixed(2)}"
+              data-campo="ped-precio" data-indice="${i}"></td>
+        <td class="num texto-acento negrita">${dinero(subtotal)}</td>
+        <td class="centrado"><button type="button" class="boton boton-peligro" data-action="quitar-linea-pedido" data-indice="${i}">✕</button></td>
+      </tr>`;
   }).join('');
 
-  document.getElementById('ped-draft-resumen').textContent = `${validos} ítem(s) / ${totalPiezas} unidad(es)`;
-  document.getElementById('ped-draft-total').textContent = `Total: ${fmtUYU(totalDraft)}`;
+  document.getElementById('ped-resumen').textContent = `${validos} ítem(s) / ${piezas} unidad(es)`;
+  document.getElementById('ped-total').textContent = `Total: ${dinero(total)}`;
 }
 
-function addPedidoDraftLinea(tipo = 'articulo') {
-  if (tipo === 'combo' && (!window.__lastCombosGuardados || window.__lastCombosGuardados.length === 0)) {
-    showToast('⚠️ Aún no tenés combos guardados. Creá y guardá uno en "Armador de Combos".');
+function agregarLineaPedido(tipo) {
+  if (tipo === 'combo' && estado.datos.combos.length === 0) {
+    avisar('⚠️ Aún no hay combos guardados. Creá uno en el módulo Armador de combos.', 'error');
     return;
   }
-  pedidoDraftLineas.push({ tipo, refId: '', cantidad: 1, precioUnitario: 0 });
-  renderPedidoDraft(window.__lastRegistroCalc || [], window.__lastCombosGuardados || []);
+  estado.borradorPedido.push({ tipo, refId: '', cantidad: 1, precioUnitario: 0 });
+  dibujarBorradorPedido();
 }
 
-function removePedidoDraftLinea(idx) {
-  if (pedidoDraftLineas.length <= 1) {
-    pedidoDraftLineas = [{ tipo: 'articulo', refId: '', cantidad: 1, precioUnitario: 0 }];
-  } else {
-    pedidoDraftLineas.splice(idx, 1);
-  }
-  renderPedidoDraft(window.__lastRegistroCalc || [], window.__lastCombosGuardados || []);
-}
-
-function changePedidoDraftTipo(idx, nuevoTipo) {
-  pedidoDraftLineas[idx] = { tipo: nuevoTipo, refId: '', cantidad: 1, precioUnitario: 0 };
-  renderPedidoDraft(window.__lastRegistroCalc || [], window.__lastCombosGuardados || []);
-}
-
-function selectPedidoDraftItem(idx, refId) {
-  const linea = pedidoDraftLineas[idx];
+function seleccionarItemPedido(indice, refId) {
+  const linea = estado.borradorPedido[indice];
   linea.refId = refId;
   if (!refId) {
     linea.precioUnitario = 0;
   } else if (linea.tipo === 'combo') {
-    const idNum = Number(String(refId).replace('CMB-', ''));
-    const cmb = (window.__lastCombosGuardados || []).find(c => Number(c.id) === idNum);
-    if (cmb) {
-      linea.precioUnitario = Number(cmb.precio_venta);
-    }
+    const combo = comboPorId(String(refId).replace('CMB-', ''));
+    linea.precioUnitario = combo ? Number(combo.precioVenta) : 0;
   } else {
-    const art = (window.__lastRegistroCalc || []).find(r => r.id_articulo === refId);
-    if (art) {
-      linea.precioUnitario = Number(art.precioVentaUnit);
-    }
+    const fila = estado.filasCalculadas.find(f => String(f.articuloId) === String(refId));
+    linea.precioUnitario = fila ? Number(fila.precioUnit) : 0;
   }
-  renderPedidoDraft(window.__lastRegistroCalc || [], window.__lastCombosGuardados || []);
+  dibujarBorradorPedido();
 }
 
-function updatePedidoDraftCant(idx, val) {
-  pedidoDraftLineas[idx].cantidad = Math.max(1, Math.floor(Number(val) || 1));
-  renderPedidoDraft(window.__lastRegistroCalc || [], window.__lastCombosGuardados || []);
-}
-
-function updatePedidoDraftPrecio(idx, val) {
-  pedidoDraftLineas[idx].precioUnitario = Math.max(0, Number(val) || 0);
-  renderPedidoDraft(window.__lastRegistroCalc || [], window.__lastCombosGuardados || []);
-}
-
-async function handleAddPedido(e) {
-  e.preventDefault();
-  const fecha = document.getElementById('ped-fecha').value || new Date().toISOString().slice(0, 10);
+async function crearPedido(evento) {
+  evento.preventDefault();
+  const fecha = document.getElementById('ped-fecha').value || hoyISO();
   const cliente = document.getElementById('ped-cliente').value.trim();
-  const estado = document.getElementById('ped-estado').value;
+  const estadoPedido = document.getElementById('ped-estado').value;
+  const lineas = estado.borradorPedido.filter(l => l.refId && l.cantidad >= 1);
 
-  const lineasValidas = pedidoDraftLineas.filter(l => l.refId && l.cantidad >= 1);
-  if (!cliente) {
-    showToast('⚠️ Ingresá el nombre del cliente');
-    return;
-  }
-  if (lineasValidas.length === 0) {
-    showToast('⚠️ Agregá al menos un artículo o combo guardado al pedido');
-    return;
-  }
+  if (!cliente) { avisar('⚠️ Ingresá el nombre del cliente', 'error'); return; }
+  if (!lineas.length) { avisar('⚠️ Agregá al menos un artículo o combo', 'error'); return; }
 
-  try {
-    const nextId = await DB3D.getNextPedidoId();
-    const itemsToInsert = lineasValidas.map(l => {
-      let descripcion = l.refId;
-      if (l.tipo === 'combo') {
-        const idNum = Number(String(l.refId).replace('CMB-', ''));
-        const cmb = (window.__lastCombosGuardados || []).find(c => Number(c.id) === idNum);
-        if (cmb) {
-          descripcion = `${cmb.nombre_combo || cmb.opcion_elegida} [${cmb.composicion}]`;
-        }
-      } else {
-        const art = (window.__lastRegistroCalc || []).find(r => r.id_articulo === l.refId);
-        if (art) {
-          descripcion = art.nombre_articulo;
-        }
-      }
-
+  const items = lineas.map(l => {
+    if (l.tipo === 'combo') {
+      const combo = comboPorId(String(l.refId).replace('CMB-', ''));
       return {
-        pedido_id: nextId,
-        tipo_item: l.tipo,
-        ref_id: l.refId,
-        descripcion,
+        tipo: 'combo',
+        comboId: combo ? combo.id : Number(String(l.refId).replace('CMB-', '')),
+        descripcion: combo ? `${combo.nombre} [${combo.composicion}]` : `Combo ${l.refId}`,
         cantidad: l.cantidad,
-        precio_unitario: l.precioUnitario
+        precioUnitario: l.precioUnitario
       };
-    });
+    }
+    const fila = estado.filasCalculadas.find(f => String(f.articuloId) === String(l.refId));
+    return {
+      tipo: 'articulo',
+      articuloId: Number(l.refId),
+      descripcion: fila ? fila.nombre : (articuloPorId(l.refId)?.nombre || l.refId),
+      cantidad: l.cantidad,
+      precioUnitario: l.precioUnitario
+    };
+  });
 
-    await DB3D.insertPedidoWithItems({ id: nextId, fecha, cliente, estado }, itemsToInsert);
-
-    e.target.reset();
-    document.getElementById('ped-fecha').value = new Date().toISOString().slice(0, 10);
-    pedidoDraftLineas = [{ tipo: 'articulo', refId: '', cantidad: 1, precioUnitario: 0 }];
-    await refreshAll();
-    showToast(`✅ Pedido ${nextId} para ${cliente} (${lineasValidas.length} ítem/s) creado`);
-  } catch (err) {
-    showToast('❌ Error: ' + err.message);
-  }
-}
-
-async function updatePedidoItemCant(itemId, cant) {
   try {
-    const c = Math.max(1, Math.floor(Number(cant) || 1));
-    await DB3D.updatePedidoItem(itemId, { cantidad: c });
-    await refreshAll();
-    showToast('Cantidad del ítem actualizada');
-  } catch (err) {
-    showToast('❌ Error: ' + err.message);
+    const codigo = await DataStore.crearPedido({ fecha, cliente, estado: estadoPedido }, items);
+    document.getElementById('ped-cliente').value = '';
+    estado.borradorPedido = [{ tipo: 'articulo', refId: '', cantidad: 1, precioUnitario: 0 }];
+    await recargar();
+    avisar(`✅ Pedido ${codigo} creado para ${cliente} (${items.length} ítem/s)`, 'exito');
+  } catch (error) {
+    avisar(`❌ ${error.message}`, 'error');
   }
 }
 
-async function updatePedidoItemPrecio(itemId, precio) {
-  try {
-    const p = Math.max(0, Number(precio) || 0);
-    await DB3D.updatePedidoItem(itemId, { precio_unitario: p });
-    await refreshAll();
-    showToast('Precio del ítem actualizado');
-  } catch (err) {
-    showToast('❌ Error: ' + err.message);
-  }
-}
+/* ==================== MÓDULO 5: MEDICIONES =============================== */
 
-async function deletePedidoItem(itemId) {
-  try {
-    await DB3D.deletePedidoItem(itemId);
-    await refreshAll();
-    showToast('Ítem quitado del pedido');
-  } catch (err) {
-    showToast('❌ Error: ' + err.message);
-  }
-}
-
-async function updatePedidoEstado(id, estado) {
-  try {
-    await DB3D.updatePedidoEstado(id, estado);
-    await refreshAll();
-    showToast(`Estado de ${id}: ${estado}`);
-  } catch (err) {
-    showToast('❌ Error: ' + err.message);
-  }
-}
-
-async function deletePedido(id) {
-  try {
-    await DB3D.deletePedido(id);
-    await refreshAll();
-    showToast(`Pedido ${id} eliminado`);
-  } catch (err) {
-    showToast('❌ Error: ' + err.message);
-  }
-}
-
-/* ============================================================================
-   5. TAB: MEDICIONES REALES (_EscalasReales)
-   ============================================================================ */
-function renderEscalasReales(escalasReales, params) {
-  const tbody = document.getElementById('tbody-escalas-reales');
-  tbody.innerHTML = escalasReales.map(e => {
-    const cUnit = Engine3D.calcularCostoBaseUnitario(
-      e.cantidad, e.gramos_lote, e.tiempo_impresion_lote_h,
-      e.tiempo_preparacion_lote_h, e.tiempo_postprocesado_unit_h, params
-    );
-    const pVenta = Engine3D.excelRound(cUnit * e.factor_multiplicador, 2);
+function renderizarMediciones() {
+  document.getElementById('body-mediciones').innerHTML = estado.datos.mediciones.map(m => {
+    const costo = Calc.costoUnitario(m.cantidad, m.gramos, m.impresionH, m.preparacionH, m.postUnitH, estado.parametros);
     return `
       <tr>
-        <td>${escHtml(e.fecha)}</td>
-        <td><span class="badge badge-blue">${escHtml(e.id_articulo)}</span></td>
-        <td><strong>${escHtml(e.nombre_articulo)}</strong></td>
-        <td class="num">${e.cantidad} u.</td>
-        <td class="num">
-          <input type="number" class="inline-input" step="0.01" value="${Number(e.gramos_lote).toFixed(2)}"
-            onchange="updateEscalaReal(${e.id}, 'gramos_lote', this.value)">
-        </td>
-        <td class="num">
-          <input type="text" class="hhmm-input inline-hhmm" value="${Engine3D.hoursToHHMM(e.tiempo_impresion_lote_h)}"
-            onchange="updateEscalaRealTime(${e.id}, 'tiempo_impresion_lote_h', this)">
-        </td>
-        <td class="num">
-          <input type="text" class="hhmm-input inline-hhmm" value="${Engine3D.hoursToHHMM(e.tiempo_preparacion_lote_h)}"
-            onchange="updateEscalaRealTime(${e.id}, 'tiempo_preparacion_lote_h', this)">
-        </td>
-        <td class="num">
-          <input type="text" class="hhmm-input inline-hhmm" value="${Engine3D.hoursToHHMM(e.tiempo_postprocesado_unit_h)}"
-            onchange="updateEscalaRealTime(${e.id}, 'tiempo_postprocesado_unit_h', this)">
-        </td>
-        <td class="num"><strong>${fmtUYU(cUnit)}</strong></td>
-        <td class="num" style="color: var(--accent); font-weight: 700;">${fmtUYU(pVenta)}</td>
-        <td class="center">
-          <button class="btn btn-danger" onclick="deleteEscalaReal(${e.id})">🗑️</button>
-        </td>
-      </tr>
-    `;
-  }).join('');
+        <td>${esc(m.fecha)}</td>
+        <td><span class="etiqueta etiqueta-azul">${esc(m.codigo)}</span></td>
+        <td><strong>${esc(m.nombre)}</strong></td>
+        <td class="num">${m.cantidad} u.</td>
+        <td class="num"><input type="number" class="entrada-inline" step="0.01" value="${Number(m.gramos).toFixed(2)}"
+              data-campo="med-gramos" data-id="${m.id}"></td>
+        <td class="num"><input class="entrada-inline entrada-hora" value="${Calc.aReloj(m.impresionH)}"
+              data-campo="med-impresion" data-tiempo data-id="${m.id}"></td>
+        <td class="num"><input class="entrada-inline entrada-hora" value="${Calc.aReloj(m.preparacionH)}"
+              data-campo="med-preparacion" data-tiempo data-id="${m.id}"></td>
+        <td class="num"><input class="entrada-inline entrada-hora" value="${Calc.aReloj(m.postUnitH)}"
+              data-campo="med-post" data-tiempo data-id="${m.id}"></td>
+        <td class="num"><strong>${dinero(costo)}</strong></td>
+        <td class="num texto-acento negrita">${dinero(Calc.round(costo * m.factor, 2))}</td>
+        <td class="centrado"><button type="button" class="boton boton-peligro" data-action="borrar-medicion" data-id="${m.id}">✕</button></td>
+      </tr>`;
+  }).join('') || `<tr><td colspan="11" class="vacio">No hay mediciones registradas.</td></tr>`;
 }
 
-async function handleAddEscalaReal(e) {
-  e.preventDefault();
-  const fecha = document.getElementById('esc-fecha').value || new Date().toISOString().slice(0, 10);
-  const nombreRaw = document.getElementById('esc-art').value.trim();
-  const cantidad = Math.max(1, Math.floor(Number(document.getElementById('esc-cant').value) || 1));
-  const gramos = Number(document.getElementById('esc-gramos').value) || 0;
-  const impH = Engine3D.hhmmToHours(document.getElementById('esc-imp').value);
-  const prepParsed = Engine3D.hhmmToHours(document.getElementById('esc-prep').value);
-  const postParsed = Engine3D.hhmmToHours(document.getElementById('esc-post').value);
-  const factor = Number(document.getElementById('esc-factor').value) || 2.5;
+async function manejarMedicion(evento) {
+  evento.preventDefault();
+  const nombre = document.getElementById('med-articulo').value.trim();
+  const cantidad = Math.max(1, Math.floor(Number(document.getElementById('med-cantidad').value) || 1));
+  const gramos = Number(document.getElementById('med-gramos').value) || 0;
+  const imp = Calc.aHoras(document.getElementById('med-impresion').value);
+  const prep = Calc.aHoras(document.getElementById('med-preparacion').value);
+  const post = Calc.aHoras(document.getElementById('med-post').value);
 
-  if (!nombreRaw || gramos <= 0 || !Number.isFinite(impH) || impH <= 0) {
-    showToast('⚠️ Verificá el artículo, gramos y tiempo de impresión en formato hh:mm');
+  if (!nombre || gramos <= 0 || !Number.isFinite(imp) || imp <= 0) {
+    avisar('⚠️ Verificá artículo, gramos y tiempo de impresión (hh:mm)', 'error');
     return;
   }
-
   try {
-    const artObj = await DB3D.getOrCreateArticulo(nombreRaw);
-
-    await DB3D.insertEscalaReal({
-      fecha,
-      id_articulo: artObj.id_articulo,
+    const articulo = await DataStore.obtenerOCrearArticulo(nombre);
+    await DataStore.guardarMedicion({
+      fecha: document.getElementById('med-fecha').value || hoyISO(),
+      articuloId: articulo.id,
       cantidad,
-      gramos_lote: gramos,
-      tiempo_impresion_lote_h: impH,
-      tiempo_preparacion_lote_h: Number.isFinite(prepParsed) ? prepParsed : 0,
-      tiempo_postprocesado_unit_h: Number.isFinite(postParsed) ? postParsed : 0,
-      factor_multiplicador: factor
+      gramos,
+      impresionH: imp,
+      preparacionH: Number.isFinite(prep) ? prep : 0,
+      postUnitH: Number.isFinite(post) ? post : 0,
+      factor: Number(document.getElementById('med-factor').value) || 2.5
     });
-
-    e.target.reset();
-    document.getElementById('esc-fecha').value = new Date().toISOString().slice(0, 10);
-    document.getElementById('esc-cant').value = 1;
-    document.getElementById('esc-prep').value = '00:05';
-    document.getElementById('esc-post').value = '00:00';
-    document.getElementById('esc-factor').value = '2.5';
-    await refreshAll();
-    showToast(`✅ Medición BambuStudio guardada (${artObj.id_articulo} | ${artObj.nombre} x${cantidad})`);
-  } catch (err) {
-    showToast('❌ Error: ' + err.message);
+    evento.target.reset();
+    document.getElementById('med-fecha').value = hoyISO();
+    document.getElementById('med-cantidad').value = 1;
+    document.getElementById('med-preparacion').value = '00:05';
+    document.getElementById('med-post').value = '00:00';
+    document.getElementById('med-factor').value = '2.5';
+    await recargar();
+    avisar(`✅ Medición guardada (${articulo.codigo} × ${cantidad})`, 'exito');
+  } catch (error) {
+    avisar(`❌ ${error.message}`, 'error');
   }
 }
 
-async function updateEscalaReal(id, col, val) {
-  const allowed = ['gramos_lote'];
-  if (!allowed.includes(col)) return;
-  try {
-    await DB3D.updateEscalaRealField(id, { [col]: Math.max(0, Number(val) || 0) });
-    await refreshAll();
-    showToast('Medición actualizada en Supabase');
-  } catch (err) {
-    showToast('❌ Error: ' + err.message);
-  }
-}
+/* ==================== MÓDULO 6: PARÁMETROS =============================== */
 
-async function updateEscalaRealTime(id, col, inputEl) {
-  const allowed = ['tiempo_impresion_lote_h', 'tiempo_preparacion_lote_h', 'tiempo_postprocesado_unit_h'];
-  if (!allowed.includes(col)) return;
-  const h = Engine3D.hhmmToHours(inputEl.value);
-  if (!Number.isFinite(h) || h < 0) {
-    showToast('⚠️ Formato inválido. Usá hh:mm (ej: 01:30)');
-    await refreshAll();
-    return;
-  }
-  try {
-    await DB3D.updateEscalaRealField(id, { [col]: h });
-    await refreshAll();
-    showToast('Tiempo actualizado (hh:mm)');
-  } catch (err) {
-    showToast('❌ Error: ' + err.message);
-  }
-}
-
-async function deleteEscalaReal(id) {
-  try {
-    await DB3D.deleteEscalaReal(id);
-    await refreshAll();
-    showToast('Medición eliminada');
-  } catch (err) {
-    showToast('❌ Error: ' + err.message);
-  }
-}
-
-/* ============================================================================
-   6. TAB: PARÁMETROS BASE (URUGUAY)
-   ============================================================================ */
-function renderParametros(paramRows) {
-  const tbody = document.getElementById('tbody-parametros');
-  tbody.innerHTML = paramRows.map(p => `
+function renderizarParametros() {
+  document.getElementById('body-parametros').innerHTML = estado.datos.parametros.map(p => `
     <tr>
-      <td><strong>${escHtml(p.parametro)}</strong></td>
-      <td class="num">
-        <input type="number" class="inline-input" style="width: 110px; font-weight: 700;" step="any" value="${p.valor}"
-          onchange="updateParametro('${escHtml(p.clave)}', this.value)">
-      </td>
-      <td>${escHtml(p.unidad)}</td>
-      <td><span class="badge badge-blue">${escHtml(p.base)}</span></td>
-      <td style="color: var(--text-muted);">${escHtml(p.notas || '')}</td>
-    </tr>
-  `).join('');
+      <td><strong>${esc(p.etiqueta)}</strong></td>
+      <td class="num"><input type="number" class="entrada-inline ancho-valor" step="any" value="${p.valor}"
+            data-campo="param-valor" data-clave="${esc(p.clave)}"></td>
+      <td>${esc(p.unidad)}</td>
+      <td><span class="etiqueta etiqueta-azul">${esc(p.base)}</span></td>
+      <td class="texto-suave">${esc(p.notas || '')}</td>
+    </tr>`).join('');
 }
 
-async function updateParametro(clave, valor) {
+/* ==================== MANEJO DE EVENTOS ================================== */
+
+async function manejarCampo(elemento) {
+  const campo = elemento.dataset.campo;
+  const id = elemento.dataset.id;
+  const indice = Number(elemento.dataset.indice);
+
   try {
-    await DB3D.updateParametro(clave, Number(valor) || 0);
-    await refreshAll();
-    showToast('Parámetro actualizado — Todos los costos recalculados');
-  } catch (err) {
-    showToast('❌ Error: ' + err.message);
+    switch (campo) {
+      case 'reg-nombre': {
+        const nombre = elemento.value.trim();
+        if (!nombre) { avisar('⚠️ El nombre no puede quedar vacío', 'error'); await recargar(); return; }
+        await DataStore.renombrarArticulo(Number(id), nombre);
+        await recargar();
+        avisar('✅ Nombre actualizado', 'exito');
+        break;
+      }
+      case 'reg-cantidad': {
+        const cantidad = Math.max(1, Math.floor(Number(elemento.value) || 1));
+        await DataStore.actualizarRegistro(Number(id), { cantidad });
+        await recargar();
+        break;
+      }
+      case 'reg-factor': {
+        await DataStore.actualizarRegistro(Number(id), { factor: Number(elemento.value) });
+        await recargar();
+        break;
+      }
+      case 'combo-linea-art':
+        estado.combo.lineas[indice].articuloId = idArticuloDesde(elemento.value);
+        renderizarCombos();
+        break;
+      case 'combo-linea-manual':
+        estado.combo.lineas[indice].manualCant = Math.max(0, Math.floor(Number(elemento.value) || 0));
+        renderizarCombos();
+        break;
+      case 'combo-nombre': {
+        const nombre = elemento.value.trim();
+        if (!nombre) { await recargar(); return; }
+        await DataStore.renombrarCombo(Number(id), nombre);
+        await recargar();
+        break;
+      }
+      case 'ped-tipo':
+        estado.borradorPedido[indice] = { tipo: elemento.value, refId: '', cantidad: 1, precioUnitario: 0 };
+        dibujarBorradorPedido();
+        break;
+      case 'ped-ref':
+        seleccionarItemPedido(indice, elemento.value);
+        break;
+      case 'ped-cant':
+        estado.borradorPedido[indice].cantidad = Math.max(1, Math.floor(Number(elemento.value) || 1));
+        dibujarBorradorPedido();
+        break;
+      case 'ped-precio':
+        estado.borradorPedido[indice].precioUnitario = Math.max(0, Number(elemento.value) || 0);
+        dibujarBorradorPedido();
+        break;
+      case 'ped-item-cant':
+        await DataStore.actualizarItemPedido(Number(id), {
+          cantidad: Math.max(1, Math.floor(Number(elemento.value) || 1))
+        });
+        await recargar();
+        break;
+      case 'ped-item-precio':
+        await DataStore.actualizarItemPedido(Number(id), {
+          precioUnitario: Math.max(0, Number(elemento.value) || 0)
+        });
+        await recargar();
+        break;
+      case 'ped-estado':
+        await DataStore.cambiarEstadoPedido(Number(id), elemento.value);
+        await recargar();
+        avisar(`✅ Estado actualizado: ${elemento.value}`, 'exito');
+        break;
+      case 'med-gramos':
+        await DataStore.actualizarMedicion(Number(id), { gramos: Math.max(0, Number(elemento.value) || 0) });
+        await recargar();
+        break;
+      case 'med-impresion':
+      case 'med-preparacion':
+      case 'med-post': {
+        const mapa = {
+          'med-impresion': 'impresionH',
+          'med-preparacion': 'preparacionH',
+          'med-post': 'postUnitH'
+        };
+        const horas = Calc.aHoras(elemento.value);
+        if (!Number.isFinite(horas) || horas < 0) {
+          avisar('⚠️ Formato inválido. Usá hh:mm (ej: 01:30)', 'error');
+          await recargar();
+          return;
+        }
+        await DataStore.actualizarMedicion(Number(id), { [mapa[campo]]: horas });
+        await recargar();
+        break;
+      }
+      case 'param-valor':
+        await DataStore.actualizarParametro(elemento.dataset.clave, Number(elemento.value) || 0);
+        await recargar();
+        avisar('✅ Parámetro actualizado — costos recalculados', 'exito');
+        break;
+    }
+  } catch (error) {
+    avisar(`❌ ${error.message}`, 'error');
+    await recargar().catch(() => {});
   }
 }
 
-/* ============================================================================
-   NAVEGACIÓN DE PESTAÑAS E INICIALIZACIÓN
-   ============================================================================ */
-document.addEventListener('DOMContentLoaded', async () => {
-  // Tabs
-  document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-      btn.classList.add('active');
-      document.getElementById(btn.dataset.target).classList.add('active');
+async function manejarAccion(accion, boton) {
+  const id = Number(boton.dataset.id);
+  const indice = Number(boton.dataset.indice);
+
+  switch (accion) {
+    case 'sincronizar':
+      await recargar();
+      avisar('↻ Datos sincronizados con Supabase', 'exito');
+      break;
+
+    case 'guardar-medicion-cotizador':
+      await guardarMedicionDelCotizador();
+      break;
+
+    case 'agregar-linea-combo':
+      if (estado.combo.lineas.length >= 10) { avisar('⚠️ Máximo 10 artículos por combo', 'error'); break; }
+      estado.combo.lineas.push({ articuloId: '', manualCant: 1 });
+      renderizarCombos();
+      break;
+
+    case 'quitar-linea-combo':
+      estado.combo.lineas.splice(indice, 1);
+      renderizarCombos();
+      break;
+
+    case 'guardar-combo':
+      await guardarComboEnHistorial(indice);
+      break;
+
+    case 'borrar-registro':
+      if (!confirm('¿Eliminar esta fila del catálogo?')) break;
+      await DataStore.eliminarRegistro(id);
+      await recargar();
+      avisar('🗑 Fila eliminada', 'exito');
+      break;
+
+    case 'borrar-combo':
+      if (!confirm('¿Eliminar este combo del historial?')) break;
+      await DataStore.eliminarCombo(id);
+      await recargar();
+      avisar('🗑 Combo eliminado', 'exito');
+      break;
+
+    case 'agregar-linea-pedido':
+      agregarLineaPedido(boton.dataset.tipo);
+      break;
+
+    case 'quitar-linea-pedido':
+      if (estado.borradorPedido.length <= 1) {
+        estado.borradorPedido = [{ tipo: 'articulo', refId: '', cantidad: 1, precioUnitario: 0 }];
+      } else {
+        estado.borradorPedido.splice(indice, 1);
+      }
+      dibujarBorradorPedido();
+      break;
+
+    case 'borrar-pedido':
+      if (!confirm('¿Eliminar el pedido y todos sus ítems?')) break;
+      await DataStore.eliminarPedido(id);
+      await recargar();
+      avisar('🗑 Pedido eliminado', 'exito');
+      break;
+
+    case 'borrar-item-pedido':
+      await DataStore.eliminarItemPedido(id);
+      await recargar();
+      avisar('🗑 Ítem quitado del pedido', 'exito');
+      break;
+
+    case 'borrar-medicion':
+      if (!confirm('¿Eliminar esta medición real?')) break;
+      await DataStore.eliminarMedicion(id);
+      await recargar();
+      avisar('🗑 Medición eliminada', 'exito');
+      break;
+  }
+}
+
+function configurarEventos() {
+  // Pestañas
+  document.querySelectorAll('.pestana').forEach(boton => {
+    boton.addEventListener('click', () => {
+      document.querySelectorAll('.pestana').forEach(b => b.classList.remove('activa'));
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('activa'));
+      boton.classList.add('activa');
+      document.getElementById(`tab-${boton.dataset.tab}`).classList.add('activa');
+      if (boton.dataset.tab === 'cotizador' && estado.grafico) estado.grafico.resize();
     });
   });
 
-  // Fechas por defecto
-  const hoy = new Date().toISOString().slice(0, 10);
-  document.getElementById('ped-fecha').value = hoy;
-  document.getElementById('esc-fecha').value = hoy;
+  // Formularios
+  document.getElementById('form-articulo').addEventListener('submit', manejarArticulo);
+  document.getElementById('form-medicion').addEventListener('submit', manejarMedicion);
+  document.getElementById('form-pedido').addEventListener('submit', crearPedido);
+  document.getElementById('art-nombre').addEventListener('input', actualizarPreviewId);
 
-  // Inicializar Supabase
+  // Controles del cotizador (recalc local, sin viaje a la BD)
+  ['cot-articulo', 'cot-cantidad', 'cot-factor', 'cot-gramos', 'cot-impresion', 'cot-preparacion']
+    .forEach(id => {
+      const el = document.getElementById(id);
+      el.addEventListener('input', actualizarCotizador);
+      el.addEventListener('change', actualizarCotizador);
+    });
+
+  // Controles del armador de combos (recalc local)
+  ['cmb-presupuesto', 'cmb-factor'].forEach(id => {
+    const el = document.getElementById(id);
+    el.addEventListener('input', actualizarCombos);
+    el.addEventListener('change', actualizarCombos);
+  });
+
+  // Normalización de tiempos hh:mm al perder el foco
+  document.addEventListener('focusout', evento => {
+    const el = evento.target;
+    if (!el.matches('[data-normalizar-tiempo], [data-tiempo]')) return;
+    if (!el.value.trim()) return;
+    const normalizado = Calc.normalizarReloj(el.value);
+    if (normalizado === null) {
+      avisar('⚠️ Formato de tiempo inválido. Usá hh:mm (ej: 02:30 o 390:00)', 'error');
+      el.focus();
+    } else {
+      el.value = normalizado;
+    }
+  });
+
+  //Delegación: clics
+  document.addEventListener('click', async evento => {
+    const boton = evento.target.closest('[data-action]');
+    if (!boton) return;
+    try {
+      await manejarAccion(boton.dataset.action, boton);
+    } catch (error) {
+      avisar(`❌ ${error.message}`, 'error');
+    }
+  });
+
+  // Delegación: cambios en campos editables
+  document.addEventListener('change', async evento => {
+    const elemento = evento.target.closest('[data-campo]');
+    if (elemento) await manejarCampo(elemento);
+  });
+}
+
+/* ============================ ARRANQUE ================================== */
+
+document.addEventListener('DOMContentLoaded', async () => {
+  configurarEventos();
+  const hoy = hoyISO();
+  document.getElementById('ped-fecha').value = hoy;
+  document.getElementById('med-fecha').value = hoy;
+
   try {
-    await DB3D.init();
-    document.getElementById('db-status-badge').textContent = '🟢 Supabase Conectado (PostgreSQL)';
-    await refreshAll();
-  } catch (err) {
-    console.error(err);
-    document.getElementById('db-status-badge').textContent = '🔴 Error conectando a Supabase';
-    showToast('⚠️ Configurá SUPABASE_URL y SUPABASE_ANON_KEY en db.js');
+    fijarEstadoBD('⏳ Conectando a Supabase…', 'estado-cargando');
+    await DataStore.init();
+    fijarEstadoBD('🟢 Supabase conectado', 'estado-ok');
+    await recargar();
+  } catch (error) {
+    console.error(error);
+    fijarEstadoBD('🔴 Sin conexión con Supabase', 'estado-error');
+    avisar(`⚠️ ${error.message}`, 'error');
   }
 });

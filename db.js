@@ -1,337 +1,342 @@
 /**
- * ============================================================================
- * CAPA DE PERSISTENCIA SUPABASE / POSTGRESQL
- * Gestión Impresión 3D - Costos, Artículos, Combos y Clientes (Uruguay)
- * ============================================================================
+ * =============================================================================
+ * CAPA DE DATOS — v2  (Supabase / PostgREST)
+ * -----------------------------------------------------------------------------
+ * Traduce entre el modelo camelCase que usa la interfaz y el esquema SQL
+ * normalizado. Toda escritura relevante pasa por constraints o RPCs
+ * transaccionales definidas en supabase_schema.sql.
+ * =============================================================================
  */
 
-// Reemplaza estos valores con las credenciales de tu proyecto Supabase (Project Settings -> API)
-const SUPABASE_URL = 'https://ffpwwfhtpgciizigkvbe.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_ju6QdIHOgPo9VT10klGxtw_Z6jCPBaZ';
+const DataStore = (() => {
+  'use strict';
 
-let supabaseClient = null;
+  let cliente = null;
 
-const DB3D = (() => {
-  async function init() {
-    if (typeof window.supabase === 'undefined') {
-      throw new Error('El SDK de Supabase no está cargado. Verifica la etiqueta <script> en index.html.');
-    }
-    if (SUPABASE_URL.includes('TU-PROYECTO') || SUPABASE_ANON_KEY.includes('TU-SUPABASE')) {
-      throw new Error('Configura SUPABASE_URL y SUPABASE_ANON_KEY en db.js antes de iniciar.');
-    }
-
-    supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-    // Verificar conexión
-    const { error } = await supabaseClient.from('parametros_base').select('clave').limit(1);
-    if (error) {
-      throw new Error('Error conectando a Supabase: ' + error.message);
-    }
+  function bd() {
+    if (!cliente) throw new Error('Base de datos no inicializada');
+    return cliente;
   }
 
-  function getClient() {
-    if (!supabaseClient) throw new Error('Supabase no inicializado.');
-    return supabaseClient;
+  function verificar(error, contexto) {
+    if (error) throw new Error(`${contexto}: ${error.message}`);
   }
 
-  async function getAllData() {
-    const client = getClient();
-    const [
-      { data: paramRows, error: e1 },
-      { data: articulos, error: e2 },
-      { data: escalasRaw, error: e3 },
-      { data: registroRaw, error: e4 },
-      { data: combosGuardados, error: e5 },
-      { data: pedidos, error: e6 },
-      { data: pedidoItems, error: e7 }
-    ] = await Promise.all([
-      client.from('parametros_base').select('*'),
-      client.from('articulos').select('id_articulo, nombre').order('id_articulo', { ascending: true }),
-      client.from('escalas_reales').select('*').order('id', { ascending: true }),
-      client.from('registro_costos').select('*').order('id', { ascending: true }),
-      client.from('combos_guardados').select('*').order('id', { ascending: false }),
-      client.from('pedidos').select('*').order('fecha', { ascending: false }).order('id', { ascending: false }),
-      client.from('pedido_items').select('*').order('id', { ascending: true })
-    ]);
+  /* --------------------------- adaptadores -------------------------------- */
 
-    const firstErr = e1 || e2 || e3 || e4 || e5 || e6 || e7;
-    if (firstErr) {
-      throw new Error('Error cargando datos desde Supabase: ' + firstErr.message);
-    }
+  const aArticulo = a => ({
+    id: Number(a.id),
+    codigo: a.codigo,
+    nombre: a.nombre
+  });
 
-    const artMap = new Map((articulos || []).map(a => [a.id_articulo, a.nombre]));
-
-    const escalasReales = (escalasRaw || []).map(e => ({
-      ...e,
-      nombre_articulo: artMap.get(e.id_articulo) || e.id_articulo
-    }));
-
-    const registroCostos = (registroRaw || []).map(r => ({
-      ...r,
-      nombre_articulo: artMap.get(r.id_articulo) || r.id_articulo
-    }));
-
+  const aMedicion = (m, articulos) => {
+    const art = articulos.get(Number(m.articulo_id));
     return {
-      paramRows: paramRows || [],
-      articulos: articulos || [],
-      escalasReales,
-      registroRaw: registroCostos,
-      combosGuardados: combosGuardados || [],
-      pedidos: pedidos || [],
-      pedidoItems: pedidoItems || []
+      id: Number(m.id),
+      fecha: m.fecha,
+      articuloId: Number(m.articulo_id),
+      codigo: art ? art.codigo : '',
+      nombre: art ? art.nombre : `Artículo ${m.articulo_id}`,
+      cantidad: Number(m.cantidad),
+      gramos: Number(m.gramos_lote),
+      impresionH: Number(m.horas_impresion_lote),
+      preparacionH: Number(m.horas_preparacion_lote),
+      postUnitH: Number(m.horas_postprocesado_unit),
+      factor: Number(m.factor)
     };
-  }
+  };
 
-  async function getNextArticuloId() {
-    const { data, error } = await getClient()
-      .from('articulos')
-      .select('id_articulo')
-      .order('id_articulo', { ascending: false })
-      .limit(1);
+  const aRegistro = (r, articulos) => {
+    const art = articulos.get(Number(r.articulo_id));
+    return {
+      id: Number(r.id),
+      articuloId: Number(r.articulo_id),
+      codigo: art ? art.codigo : '',
+      nombre: art ? art.nombre : `Artículo ${r.articulo_id}`,
+      cantidad: Number(r.cantidad),
+      factor: Number(r.factor)
+    };
+  };
 
-    if (error || !data || data.length === 0) return 'ART-001';
-    const m = String(data[0].id_articulo || '').match(/^ART-(\d+)$/i);
-    const nextNum = m ? parseInt(m[1], 10) + 1 : 1;
-    return 'ART-' + String(nextNum).padStart(3, '0');
-  }
+  const aComboItem = ci => ({
+    id: Number(ci.id),
+    articuloId: Number(ci.articulo_id),
+    cantidad: Number(ci.cantidad),
+    descripcion: ci.descripcion,
+    precioUnitario: Number(ci.precio_unitario)
+  });
 
-  async function findArticuloByName(nombreRaw) {
-    const cleanName = String(nombreRaw || '').replace(/^ART-\d+\s*\|\s*/i, '').trim();
-    if (!cleanName) return null;
+  const aCombo = (c, itemsPorCombo) => ({
+    id: Number(c.id),
+    fecha: c.fecha,
+    nombre: c.nombre,
+    presupuesto: Number(c.presupuesto),
+    opcion: c.opcion,
+    composicion: c.composicion,
+    precioVenta: Number(c.precio_venta),
+    costoProduccion: Number(c.costo_produccion),
+    saldo: Number(c.saldo),
+    estado: c.estado,
+    items: itemsPorCombo.get(Number(c.id)) || []
+  });
 
-    const { data, error } = await getClient()
-      .from('articulos')
-      .select('id_articulo, nombre')
-      .ilike('nombre', cleanName)
-      .limit(1);
+  const aPedidoItem = pi => ({
+    id: Number(pi.id),
+    tipo: pi.tipo,
+    articuloId: pi.articulo_id == null ? null : Number(pi.articulo_id),
+    comboId: pi.combo_id == null ? null : Number(pi.combo_id),
+    descripcion: pi.descripcion,
+    cantidad: Number(pi.cantidad),
+    precioUnitario: Number(pi.precio_unitario)
+  });
 
-    if (error || !data || data.length === 0) return null;
-    return data[0];
-  }
+  const aPedido = (p, itemsPorPedido) => ({
+    id: Number(p.id),
+    codigo: p.codigo,
+    fecha: p.fecha,
+    cliente: p.cliente,
+    estado: p.estado,
+    items: itemsPorPedido.get(Number(p.id)) || []
+  });
 
-  async function getOrCreateArticulo(nombreRaw) {
-    const cleanName = String(nombreRaw || '').replace(/^ART-\d+\s*\|\s*/i, '').trim();
-    if (!cleanName) {
-      throw new Error('El nombre del artículo no puede estar vacío.');
+  /* ------------------------------ ciclo de vida --------------------------- */
+
+  async function init() {
+    const config = window.APP_CONFIG || {};
+    if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+      throw new Error('No se cargó el SDK de Supabase (revisá el <script> en index.html)');
+    }
+    if (!config.url || !config.anonKey || config.url.includes('TU-PROYECTO')) {
+      throw new Error('Configurá url y anonKey en config.js');
     }
 
-    const existing = await findArticuloByName(cleanName);
-    if (existing) return existing;
+    cliente = window.supabase.createClient(config.url, config.anonKey, {
+      auth: { persistSession: false, autoRefreshToken: false }
+    });
 
-    const nextId = await getNextArticuloId();
-    const { data, error } = await getClient()
-      .from('articulos')
-      .insert([{ id_articulo: nextId, nombre: cleanName }])
-      .select()
-      .single();
-
-    if (error) throw new Error(error.message);
-    return data;
-  }
-
-  async function updateArticuloNombre(idArticulo, nuevoNombreRaw) {
-    const cleanName = String(nuevoNombreRaw || '').replace(/^ART-\d+\s*\|\s*/i, '').trim();
-    if (!cleanName) return false;
-
-    const { error } = await getClient()
-      .from('articulos')
-      .update({ nombre: cleanName })
-      .eq('id_articulo', idArticulo);
-
-    if (error) throw new Error(error.message);
+    const { error } = await cliente.from('parametros_base').select('clave').limit(1);
+    if (error) {
+      throw new Error(`${error.message} — ¿Ejecutaste supabase_schema.sql en el SQL Editor?`);
+    }
     return true;
   }
 
-  // --- CRUD Registro de Costos ---
-  async function insertRegistroCosto(id_articulo, cantidad, factor_multiplicador) {
-    const { error } = await getClient()
-      .from('registro_costos')
-      .insert([{ id_articulo, cantidad, factor_multiplicador }]);
-    if (error) throw new Error(error.message);
-  }
+  /** Carga todos los datos en paralelo y arma el modelo de vista en memoria. */
+  async function cargarTodo() {
+    const c = bd();
+    const consultas = await Promise.all([
+      c.from('parametros_base').select('*').order('clave'),
+      c.from('articulos').select('*').order('codigo', { ascending: true }),
+      c.from('mediciones_slicer').select('*').order('fecha', { ascending: false }).order('id'),
+      c.from('registro_costos').select('*').order('id'),
+      c.from('combos').select('*').order('fecha', { ascending: false }).order('id', { ascending: false }),
+      c.from('combo_items').select('*').order('id'),
+      c.from('pedidos').select('*').order('fecha', { ascending: false }).order('id', { ascending: false }),
+      c.from('pedido_items').select('*').order('id')
+    ]);
 
-  async function updateRegistroCosto(id, fields) {
-    const { error } = await getClient()
-      .from('registro_costos')
-      .update(fields)
-      .eq('id', id);
-    if (error) throw new Error(error.message);
-  }
+    const nombres = [
+      'parámetros base', 'artículos', 'mediciones', 'registro de costos',
+      'combos', 'ítems de combo', 'pedidos', 'ítems de pedido'
+    ];
+    consultas.forEach((res, i) => verificar(res.error, `Error cargando ${nombres[i]}`));
 
-  async function deleteRegistroCosto(id) {
-    const { error } = await getClient()
-      .from('registro_costos')
-      .delete()
-      .eq('id', id);
-    if (error) throw new Error(error.message);
-  }
+    const [params, arts, meds, reg, combos, comboItems, pedidos, pedItems] =
+      consultas.map(r => r.data || []);
 
-  // --- CRUD Escalas Reales ---
-  async function upsertEscalaReal(payload) {
-    const client = getClient();
-    const { data: existing } = await client
-      .from('escalas_reales')
-      .select('id')
-      .eq('id_articulo', payload.id_articulo)
-      .eq('cantidad', payload.cantidad)
-      .limit(1);
+    const mapaArticulos = new Map(arts.map(a => [Number(a.id), aArticulo(a)]));
 
-    if (existing && existing.length > 0) {
-      const { error } = await client
-        .from('escalas_reales')
-        .update({
-          fecha: payload.fecha,
-          gramos_lote: payload.gramos_lote,
-          tiempo_impresion_lote_h: payload.tiempo_impresion_lote_h,
-          tiempo_preparacion_lote_h: payload.tiempo_preparacion_lote_h,
-          factor_multiplicador: payload.factor_multiplicador
-        })
-        .eq('id', existing[0].id);
-      if (error) throw new Error(error.message);
-    } else {
-      const { error } = await client
-        .from('escalas_reales')
-        .insert([payload]);
-      if (error) throw new Error(error.message);
+    const itemsCombo = new Map();
+    for (const ci of comboItems) {
+      const id = Number(ci.combo_id);
+      if (!itemsCombo.has(id)) itemsCombo.set(id, []);
+      itemsCombo.get(id).push(aComboItem(ci));
     }
-  }
 
-  async function insertEscalaReal(payload) {
-    const { error } = await getClient()
-      .from('escalas_reales')
-      .insert([payload]);
-    if (error) throw new Error(error.message);
-  }
-
-  async function updateEscalaRealField(id, fields) {
-    const { error } = await getClient()
-      .from('escalas_reales')
-      .update(fields)
-      .eq('id', id);
-    if (error) throw new Error(error.message);
-  }
-
-  async function deleteEscalaReal(id) {
-    const { error } = await getClient()
-      .from('escalas_reales')
-      .delete()
-      .eq('id', id);
-    if (error) throw new Error(error.message);
-  }
-
-  // --- CRUD Combos Guardados ---
-  async function insertComboGuardado(payload) {
-    const { error } = await getClient()
-      .from('combos_guardados')
-      .insert([payload]);
-    if (error) throw new Error(error.message);
-  }
-
-  async function updateComboNombre(id, nombre_combo) {
-    const { error } = await getClient()
-      .from('combos_guardados')
-      .update({ nombre_combo })
-      .eq('id', id);
-    if (error) throw new Error(error.message);
-  }
-
-  async function deleteComboGuardado(id) {
-    const { error } = await getClient()
-      .from('combos_guardados')
-      .delete()
-      .eq('id', id);
-    if (error) throw new Error(error.message);
-  }
-
-  // --- CRUD Pedidos y Pedido Items ---
-  async function getNextPedidoId() {
-    const { data, error } = await getClient()
-      .from('pedidos')
-      .select('id');
-
-    let maxNum = 0;
-    if (!error && data) {
-      for (const r of data) {
-        const m = String(r.id).match(/(\d+)/);
-        if (m) maxNum = Math.max(maxNum, Number(m[1]));
-      }
+    const itemsPedido = new Map();
+    for (const pi of pedItems) {
+      const id = Number(pi.pedido_id);
+      if (!itemsPedido.has(id)) itemsPedido.set(id, []);
+      itemsPedido.get(id).push(aPedidoItem(pi));
     }
-    return 'PED-' + String(maxNum + 1).padStart(3, '0');
+
+    return {
+      parametros: params,
+      articulos: [...mapaArticulos.values()],
+      mediciones: meds.map(m => aMedicion(m, mapaArticulos)),
+      registro: reg.map(r => aRegistro(r, mapaArticulos)),
+      combos: combos.map(c => aCombo(c, itemsCombo)),
+      pedidos: pedidos.map(p => aPedido(p, itemsPedido))
+    };
   }
 
-  async function insertPedidoWithItems(pedido, items) {
-    const client = getClient();
-    const { error: errPed } = await client.from('pedidos').insert([pedido]);
-    if (errPed) throw new Error(errPed.message);
+  /* ------------------------------- artículos ------------------------------ */
 
-    const { error: errItems } = await client.from('pedido_items').insert(items);
-    if (errItems) throw new Error(errItems.message);
+  /** Obtiene o crea un artículo por nombre. La BD genera el código ART-XXX. */
+  async function obtenerOCrearArticulo(nombre) {
+    const { data, error } = await bd().rpc('api_obtener_o_crear_articulo', { p_nombre: nombre });
+    verificar(error, 'No se pudo resolver el artículo');
+    if (!data || !data.length) throw new Error('La base de datos no devolvió el artículo');
+    return aArticulo(data[0]);
   }
 
-  async function updatePedidoEstado(id, estado) {
-    const { error } = await getClient()
-      .from('pedidos')
-      .update({ estado })
-      .eq('id', id);
-    if (error) throw new Error(error.message);
+  async function renombrarArticulo(id, nombre) {
+    const { error } = await bd().from('articulos').update({ nombre }).eq('id', id);
+    verificar(error, 'No se pudo renombrar el artículo');
   }
 
-  async function deletePedido(id) {
-    const { error } = await getClient()
-      .from('pedidos')
-      .delete()
-      .eq('id', id);
-    if (error) throw new Error(error.message);
+  /* --------------------------- registro de costos ------------------------- */
+
+  async function agregarRegistro(articuloId, cantidad, factor) {
+    const { error } = await bd().from('registro_costos')
+      .insert([{ articulo_id: articuloId, cantidad, factor }]);
+    verificar(error, 'No se pudo agregar el artículo al catálogo');
   }
 
-  async function updatePedidoItem(id, fields) {
-    const { error } = await getClient()
-      .from('pedido_items')
-      .update(fields)
-      .eq('id', id);
-    if (error) throw new Error(error.message);
+  async function actualizarRegistro(id, campos) {
+    const payload = {};
+    if ('cantidad' in campos) payload.cantidad = campos.cantidad;
+    if ('factor' in campos) payload.factor = campos.factor;
+    const { error } = await bd().from('registro_costos').update(payload).eq('id', id);
+    verificar(error, 'No se pudo actualizar el registro');
   }
 
-  async function deletePedidoItem(id) {
-    const { error } = await getClient()
-      .from('pedido_items')
-      .delete()
-      .eq('id', id);
-    if (error) throw new Error(error.message);
+  async function eliminarRegistro(id) {
+    const { error } = await bd().from('registro_costos').delete().eq('id', id);
+    verificar(error, 'No se pudo eliminar el registro');
   }
 
-  // --- CRUD Parámetros Base ---
-  async function updateParametro(clave, valor) {
-    const { error } = await getClient()
-      .from('parametros_base')
-      .update({ valor })
-      .eq('clave', clave);
-    if (error) throw new Error(error.message);
+  /* ------------------------ mediciones del slicer ------------------------- */
+
+  async function guardarMedicion(m) {
+    const payload = {
+      fecha: m.fecha,
+      articulo_id: m.articuloId,
+      cantidad: m.cantidad,
+      gramos_lote: m.gramos,
+      horas_impresion_lote: m.impresionH,
+      horas_preparacion_lote: m.preparacionH,
+      horas_postprocesado_unit: m.postUnitH,
+      factor: m.factor
+    };
+    const { error } = await bd().from('mediciones_slicer')
+      .upsert(payload, { onConflict: 'articulo_id,cantidad' });
+    verificar(error, 'No se pudo guardar la medición');
+  }
+
+  async function actualizarMedicion(id, campos) {
+    const columnas = {
+      gramos: 'gramos_lote',
+      impresionH: 'horas_impresion_lote',
+      preparacionH: 'horas_preparacion_lote',
+      postUnitH: 'horas_postprocesado_unit'
+    };
+    const payload = {};
+    for (const [clave, columna] of Object.entries(columnas)) {
+      if (clave in campos) payload[columna] = campos[clave];
+    }
+    const { error } = await bd().from('mediciones_slicer').update(payload).eq('id', id);
+    verificar(error, 'No se pudo actualizar la medición');
+  }
+
+  async function eliminarMedicion(id) {
+    const { error } = await bd().from('mediciones_slicer').delete().eq('id', id);
+    verificar(error, 'No se pudo eliminar la medición');
+  }
+
+  /* -------------------------------- combos -------------------------------- */
+
+  async function guardarCombo(combo, items) {
+    const { error, data } = await bd().rpc('api_guardar_combo', {
+      p_nombre: combo.nombre,
+      p_fecha: combo.fecha,
+      p_presupuesto: combo.presupuesto,
+      p_opcion: combo.opcion,
+      p_composicion: combo.composicion,
+      p_precio_venta: combo.precioVenta,
+      p_costo: combo.costoProduccion,
+      p_saldo: combo.saldo,
+      p_items: items
+    });
+    verificar(error, 'No se pudo guardar el combo');
+    return data;
+  }
+
+  async function renombrarCombo(id, nombre) {
+    const { error } = await bd().from('combos').update({ nombre }).eq('id', id);
+    verificar(error, 'No se pudo renombrar el combo');
+  }
+
+  async function eliminarCombo(id) {
+    const { error } = await bd().from('combos').delete().eq('id', id);
+    verificar(error, 'No se pudo eliminar el combo');
+  }
+
+  /* ------------------------------- pedidos -------------------------------- */
+
+  /** Inserta pedido + ítems en una única transacción. Devuelve el código PED-XXX. */
+  async function crearPedido(pedido, items) {
+    const { data, error } = await bd().rpc('api_crear_pedido', {
+      p_cliente: pedido.cliente,
+      p_fecha: pedido.fecha,
+      p_estado: pedido.estado,
+      p_items: items
+    });
+    verificar(error, 'No se pudo crear el pedido');
+    return data;
+  }
+
+  async function cambiarEstadoPedido(id, estado) {
+    const { error } = await bd().from('pedidos').update({ estado }).eq('id', id);
+    verificar(error, 'No se pudo cambiar el estado');
+  }
+
+  async function eliminarPedido(id) {
+    const { error } = await bd().from('pedidos').delete().eq('id', id);
+    verificar(error, 'No se pudo eliminar el pedido');
+  }
+
+  async function actualizarItemPedido(id, campos) {
+    const payload = {};
+    if ('cantidad' in campos) payload.cantidad = campos.cantidad;
+    if ('precioUnitario' in campos) payload.precio_unitario = campos.precioUnitario;
+    const { error } = await bd().from('pedido_items').update(payload).eq('id', id);
+    verificar(error, 'No se pudo actualizar el ítem');
+  }
+
+  async function eliminarItemPedido(id) {
+    const { error } = await bd().from('pedido_items').delete().eq('id', id);
+    verificar(error, 'No se pudo quitar el ítem');
+  }
+
+  /* ------------------------------ parámetros ------------------------------ */
+
+  async function actualizarParametro(clave, valor) {
+    const { error } = await bd().from('parametros_base')
+      .update({ valor }).eq('clave', clave);
+    verificar(error, 'No se pudo actualizar el parámetro');
   }
 
   return {
     init,
-    getAllData,
-    getNextArticuloId,
-    findArticuloByName,
-    getOrCreateArticulo,
-    updateArticuloNombre,
-    insertRegistroCosto,
-    updateRegistroCosto,
-    deleteRegistroCosto,
-    upsertEscalaReal,
-    insertEscalaReal,
-    updateEscalaRealField,
-    deleteEscalaReal,
-    insertComboGuardado,
-    updateComboNombre,
-    deleteComboGuardado,
-    getNextPedidoId,
-    insertPedidoWithItems,
-    updatePedidoEstado,
-    deletePedido,
-    updatePedidoItem,
-    deletePedidoItem,
-    updateParametro
+    cargarTodo,
+    obtenerOCrearArticulo,
+    renombrarArticulo,
+    agregarRegistro,
+    actualizarRegistro,
+    eliminarRegistro,
+    guardarMedicion,
+    actualizarMedicion,
+    eliminarMedicion,
+    guardarCombo,
+    renombrarCombo,
+    eliminarCombo,
+    crearPedido,
+    cambiarEstadoPedido,
+    eliminarPedido,
+    actualizarItemPedido,
+    eliminarItemPedido,
+    actualizarParametro
   };
 })();
