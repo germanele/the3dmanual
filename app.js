@@ -59,6 +59,13 @@ function hoyISO() {
   return new Date().toISOString().slice(0, 10);
 }
 
+/** Desglose de un pedido: subtotal, IVA (22 % si es con factura) y total. */
+function totalesPedido(items, conFactura) {
+  const subtotal = (items || []).reduce((suma, it) =>
+    suma + Calc.round(Number(it.cantidad) * Number(it.precioUnitario), 2), 0);
+  return Calc.conIVA(subtotal, conFactura);
+}
+
 function articuloPorId(id) {
   return estado.datos.articulos.find(a => String(a.id) === String(id));
 }
@@ -491,15 +498,10 @@ async function guardarComboEnHistorial(indice) {
 
 /* ===================== MÓDULO 4: PEDIDOS ================================= */
 
-function totalPedido(pedido) {
-  return pedido.items.reduce((suma, it) =>
-    suma + Calc.round(Number(it.cantidad) * Number(it.precioUnitario), 2), 0);
-}
-
 function renderizarPedidos() {
   let facturado = 0, enCurso = 0;
   for (const p of estado.datos.pedidos) {
-    const total = totalPedido(p);
+    const total = totalesPedido(p.items, p.conFactura).total;
     if (p.estado === 'Entregado') facturado += total;
     if (['Pendiente', 'En Producción', 'Listo para Entrega'].includes(p.estado)) enCurso += total;
   }
@@ -509,7 +511,9 @@ function renderizarPedidos() {
 
   dibujarBorradorPedido();
 
-  document.getElementById('body-pedidos').innerHTML = estado.datos.pedidos.map(p => `
+  document.getElementById('body-pedidos').innerHTML = estado.datos.pedidos.map(p => {
+    const t = totalesPedido(p.items, p.conFactura);
+    return `
     <tr>
       <td><strong>${esc(p.codigo)}</strong></td>
       <td>${esc(p.fecha)}</td>
@@ -532,24 +536,36 @@ function renderizarPedidos() {
             </div>`).join('') || '<span class="texto-suave">Sin ítems</span>'}
         </div>
       </td>
-      <td class="num negrita texto-acento">${dinero(totalPedido(p))}</td>
+      <td class="centrado">
+        <label class="interruptor-tabla ${p.conFactura ? 'etiqueta-factura' : 'etiqueta-sin-factura'}"
+               title="Marcá si se factura: suma 22 % de IVA al precio final">
+          <input type="checkbox" data-campo="ped-factura" data-id="${p.id}" ${p.conFactura ? 'checked' : ''}>
+          ${p.conFactura ? 'Sí' : 'No'}
+        </label>
+      </td>
+      <td class="num">${dinero(t.subtotal)}</td>
+      <td class="num negrita texto-acento"
+          title="${p.conFactura ? `Incluye ${dinero(t.iva)} de IVA (22 %)` : 'Sin IVA — subtotal y total coinciden'}">
+        ${dinero(t.total)}
+      </td>
       <td>
         <select class="entrada-inline" data-campo="ped-estado" data-id="${p.id}">
           ${ESTADOS_PEDIDO.map(e => `<option ${p.estado === e ? 'selected' : ''}>${e}</option>`).join('')}
         </select>
       </td>
       <td class="centrado"><button type="button" class="boton boton-peligro" data-action="borrar-pedido" data-id="${p.id}">🗑</button></td>
-    </tr>`).join('') || `<tr><td colspan="7" class="vacio">No hay pedidos registrados.</td></tr>`;
+    </tr>`;
+  }).join('') || `<tr><td colspan="9" class="vacio">No hay pedidos registrados.</td></tr>`;
 }
 
 function dibujarBorradorPedido() {
   const tbody = document.getElementById('body-ped-draft');
   if (!tbody) return;
-  let total = 0, piezas = 0, validos = 0;
+  let suma = 0, piezas = 0, validos = 0;
 
   tbody.innerHTML = estado.borradorPedido.map((linea, i) => {
     const subtotal = Calc.round((linea.cantidad || 1) * (linea.precioUnitario || 0), 2);
-    if (linea.refId) { total += subtotal; piezas += Number(linea.cantidad || 1); validos++; }
+    if (linea.refId) { suma += subtotal; piezas += Number(linea.cantidad || 1); validos++; }
 
     const opciones = linea.tipo === 'combo'
       ? `<option value="">— Elegir combo guardado —</option>` + estado.datos.combos.map(c => {
@@ -580,8 +596,12 @@ function dibujarBorradorPedido() {
       </tr>`;
   }).join('');
 
+  const conFactura = document.getElementById('ped-factura')?.checked || false;
+  const t = Calc.conIVA(suma, conFactura);
   document.getElementById('ped-resumen').textContent = `${validos} ítem(s) / ${piezas} unidad(es)`;
-  document.getElementById('ped-total').textContent = `Total: ${dinero(total)}`;
+  document.getElementById('ped-subtotal').textContent = `Subtotal: ${dinero(t.subtotal)}`;
+  document.getElementById('ped-iva').textContent = `IVA (22 %): ${dinero(t.iva)}`;
+  document.getElementById('ped-total').textContent = `Total: ${dinero(t.total)}`;
 }
 
 function agregarLineaPedido(tipo) {
@@ -613,6 +633,7 @@ async function crearPedido(evento) {
   const fecha = document.getElementById('ped-fecha').value || hoyISO();
   const cliente = document.getElementById('ped-cliente').value.trim();
   const estadoPedido = document.getElementById('ped-estado').value;
+  const conFactura = document.getElementById('ped-factura')?.checked || false;
   const lineas = estado.borradorPedido.filter(l => l.refId && l.cantidad >= 1);
 
   if (!cliente) { avisar('⚠️ Ingresá el nombre del cliente', 'error'); return; }
@@ -640,11 +661,14 @@ async function crearPedido(evento) {
   });
 
   try {
-    const codigo = await DataStore.crearPedido({ fecha, cliente, estado: estadoPedido }, items);
+    const codigo = await DataStore.crearPedido({ fecha, cliente, estado: estadoPedido, conFactura }, items);
+    const t = totalesPedido(items, conFactura);
     document.getElementById('ped-cliente').value = '';
+    document.getElementById('ped-factura').checked = false;
     estado.borradorPedido = [{ tipo: 'articulo', refId: '', cantidad: 1, precioUnitario: 0 }];
     await recargar();
-    avisar(`✅ Pedido ${codigo} creado para ${cliente} (${items.length} ítem/s)`, 'exito');
+    avisar(`✅ Pedido ${codigo} creado para ${cliente} — total ${dinero(t.total)}` +
+           (conFactura ? ` (incluye ${dinero(t.iva)} de IVA)` : ''), 'exito');
   } catch (error) {
     avisar(`❌ ${error.message}`, 'error');
   }
@@ -803,6 +827,13 @@ async function manejarCampo(elemento) {
         await recargar();
         avisar(`✅ Estado actualizado: ${elemento.value}`, 'exito');
         break;
+      case 'ped-factura': {
+        await DataStore.cambiarFacturaPedido(Number(id), elemento.checked);
+        await recargar();
+        const pedido = estado.datos.pedidos.find(p => p.id === Number(id));
+        avisar(`✅ ${pedido?.codigo || 'Pedido'} ${elemento.checked ? 'ahora es con factura (+22 % IVA)' : 'ahora es sin factura'}`, 'exito');
+        break;
+      }
       case 'med-gramos':
         await DataStore.actualizarMedicion(Number(id), { gramos: Math.max(0, Number(elemento.value) || 0) });
         await recargar();
@@ -845,6 +876,10 @@ async function manejarAccion(accion, boton) {
     case 'sincronizar':
       await recargar();
       avisar('↻ Datos sincronizados con Supabase', 'exito');
+      break;
+
+    case 'cerrar-sesion':
+      await DataStore.cerrarSesion();
       break;
 
     case 'guardar-medicion-cotizador':
@@ -962,6 +997,12 @@ function configurarEventos() {
     }
   });
 
+  const casillaFactura = document.getElementById('ped-factura');
+  if (casillaFactura) {
+    casillaFactura.addEventListener('change', dibujarBorradorPedido);
+    casillaFactura.addEventListener('input', dibujarBorradorPedido);
+  }
+
   //Delegación: clics
   document.addEventListener('click', async evento => {
     const boton = evento.target.closest('[data-action]');
@@ -980,22 +1021,82 @@ function configurarEventos() {
   });
 }
 
-/* ============================ ARRANQUE ================================== */
+/* ====================== AUTENTICACIÓN Y ARRANQUE ======================== */
+
+function mostrarLogin(mensaje = '') {
+  const pantalla = document.getElementById('pantalla-login');
+  if (pantalla) pantalla.classList.add('visible');
+  document.getElementById('login-error').textContent = mensaje;
+}
+
+function ocultarLogin() {
+  document.getElementById('pantalla-login').classList.remove('visible');
+  document.getElementById('login-error').textContent = '';
+}
+
+async function iniciarApp() {
+  try {
+    fijarEstadoBD('⏳ Verificando acceso…', 'estado-cargando');
+    await DataStore.verificarAutorizacion();
+    const user = await DataStore.usuario();
+    document.getElementById('usuario-actual').textContent = user?.email || '';
+    ocultarLogin();
+    fijarEstadoBD('🟢 Supabase conectado', 'estado-ok');
+    await recargar();
+  } catch (error) {
+    console.error(error);
+    fijarEstadoBD('🔴 Acceso denegado', 'estado-error');
+    await DataStore.cerrarSesion().catch(() => {});
+    mostrarLogin(error.message);
+  }
+}
+
+async function manejarLogin(evento) {
+  evento.preventDefault();
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  const boton = evento.target.querySelector('button[type="submit"]');
+  boton.disabled = true;
+  try {
+    await DataStore.iniciarSesion(email, password);
+    await iniciarApp();
+  } catch (error) {
+    mostrarLogin(error.message);
+  } finally {
+    boton.disabled = false;
+  }
+}
 
 document.addEventListener('DOMContentLoaded', async () => {
   configurarEventos();
   const hoy = hoyISO();
   document.getElementById('ped-fecha').value = hoy;
   document.getElementById('med-fecha').value = hoy;
+  document.getElementById('form-login').addEventListener('submit', manejarLogin);
 
   try {
     fijarEstadoBD('⏳ Conectando a Supabase…', 'estado-cargando');
     await DataStore.init();
-    fijarEstadoBD('🟢 Supabase conectado', 'estado-ok');
-    await recargar();
   } catch (error) {
     console.error(error);
     fijarEstadoBD('🔴 Sin conexión con Supabase', 'estado-error');
-    avisar(`⚠️ ${error.message}`, 'error');
+    mostrarLogin(error.message);
+    return;
   }
+
+  DataStore.alCambiarAuth(evento => {
+    if (evento === 'SIGNED_OUT') {
+      document.getElementById('usuario-actual').textContent = '';
+      fijarEstadoBD('⏳ Sesión cerrada', 'estado-cargando');
+      mostrarLogin();
+    }
+  });
+
+  const sesion = await DataStore.sesion();
+  if (!sesion) {
+    fijarEstadoBD('🔒 Ingresá para continuar', 'estado-cargando');
+    mostrarLogin();
+    return;
+  }
+  await iniciarApp();
 });
