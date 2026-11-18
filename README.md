@@ -12,6 +12,18 @@ Conserva la lógica y el propósito del original:
 - **Mediciones reales del slicer** (BambuStudio) con tiempos `hh:mm`.
 - **Parámetros base** editables que recalculan toda la aplicación.
 
+### Novedades
+
+- **Facturación con IVA**: cada pedido tiene un interruptor *Con factura*.
+  Al activarlo se suma **22 % de IVA** al precio final, con desglose de
+  subtotal, IVA y total tanto en el borrador como en el historial. La cartera
+  muestra **Subtotal** (sin IVA) y **Total** (con IVA); si el pedido es sin
+  factura, ambas columnas son iguales. El cambio se puede hacer también
+  después de creado el pedido, desde la tabla.
+- **Acceso privado**: login con Supabase Auth + lista blanca de correos y RLS
+  restrictivo. La clave *publishable* sigue siendo pública (es normal), pero sin
+  sesión la BD no devuelve ningún dato.
+
 ---
 
 ## Qué cambió en la base de datos
@@ -27,7 +39,7 @@ Conserva la lógica y el propósito del original:
 | `estado TEXT` libre | `ENUM estado_pedido` controlado por la BD |
 | Sin auditoría | `creado_en` / `actualizado_en` + trigger |
 | Inserción de pedido en 2 consultas | RPC `api_crear_pedido` transaccional |
-| RLS permisivo sin grants explícitos | RLS por tabla + grants mínimos para `anon` / `authenticated` |
+| RLS permisivo sin grants explícitos | RLS por tabla + Supabase Auth + lista blanca de correos; `anon` sin permisos |
 
 Tablas nuevas: `parametros_base`, `articulos`, `mediciones_slicer`,
 `registro_costos`, `combos`, `combo_items`, `pedidos`, `pedido_items`.
@@ -45,7 +57,27 @@ Tablas nuevas: `parametros_base`, `articulos`, `mediciones_slicer`,
 > ⚠️ El script **elimina las tablas anteriores y sus datos** y vuelve a cargar
 > los datos de ejemplo. Es una reconstrucción desde cero, como pediste.
 
-### 2. Configurar credenciales
+> Si **ya tenés la BD v2 funcionando**, no vuelvas a ejecutar el schema completo:
+> corré solamente `migration_factura.sql`. Agrega la columna `con_factura`,
+> actualiza la RPC de pedidos y la vista de resumen, **sin borrar datos**.
+> (También reaplica el fix de `api_obtener_o_crear_articulo`.)
+
+### 2. Activar el acceso privado (login + RLS)
+
+Habilitá el login y cerrá la BD para que solo vos puedas entrar:
+
+1. **Authentication → Providers → Email**: habilitado (y desactivá *Confirm email*
+   si querés entrar sin verificar el correo, o dejalo activo para más seguridad).
+2. **Authentication → Users → Add user**: creá tu usuario con email y contraseña.
+3. Editá `auth_rls.sql` y reemplazá `TU-EMAIL@ejemplo.com` por ese email.
+4. **SQL Editor → New query → Run** con todo `auth_rls.sql`. No borra datos.
+
+> Esto crea la tabla `usuarios_autorizados`, reemplaza la política abierta por
+> `i3d_acceso_autenticado` y les quita todos los permisos al rol `anon`.
+> Para agregar otro usuario después:
+> `INSERT INTO public.usuarios_autorizados(email) VALUES ('otro@email.com');`
+
+### 3. Configurar credenciales
 
 Editá `config.js` con los valores de **Project Settings → API** de tu proyecto:
 
@@ -56,7 +88,7 @@ window.APP_CONFIG = {
 };
 ```
 
-### 3. Abrir la aplicación
+### 4. Abrir la aplicación
 
 Cualquier servidor estático sirve (los CDNs requieren `http://`):
 
@@ -66,9 +98,39 @@ python -m http.server 8080
 npx serve .
 ```
 
-Visitá `http://localhost:8080`. En la esquina superior derecha debe aparecer
-**🟢 Supabase conectado**. Si sale rojo, revisá `config.js` y que el SQL haya
-corrido sin errores.
+Visitá `http://localhost:8080`. Primero aparece la pantalla de login; al entrar
+con tu usuario, la esquina superior derecha debe mostrar **🟢 Supabase conectado**
+y tu email. Si sale rojo, revisá `config.js`, que el SQL haya corrido sin errores
+y que tu email esté en `usuarios_autorizados`.
+
+---
+
+## Publicar en Cloudflare Pages (gratis)
+
+1. **Subí los archivos a un repo de GitHub** (aunque antes usaras Pages u otro
+   hosting): creá un repo nuevo y hacé commit de **todos** los archivos de esta
+   carpeta (`index.html`, `config.js`, `engine.js`, `db.js`, `app.js`,
+   `styles.css` y los `.sql`).
+2. Entrá a [Cloudflare Dashboard](https://dash.cloudflare.com/) →
+   **Workers & Pages → Create → Pages → Connect to Git**.
+3. Elegí tu cuenta de GitHub y el repo. En *Build settings*:
+   - **Framework preset:** `None`
+   - **Build command:** (vacío)
+   - **Build output directory:** `/` (la raíz, porque `index.html` está ahí)
+4. **Save and Deploy**. En ~1 minuto te dan una URL tipo
+   `https://printlab-3d.pages.dev`.
+5. **Dominio propio (opcional):** en la pestaña *Custom domains* → *Add custom
+   domain*, poné `tudominio.com` y seguís las instrucciones de DNS (Cloudflare
+   lo configura automáticamente si el dominio está en Cloudflare).
+
+> Cloudflare no ejecuta tu SQL: eso ya quedó hecho en Supabase. Solo sirve los
+> archivos estáticos por HTTPS. El login de Supabase funciona igual porque el
+> proyecto permite el origen de `*.pages.dev` (si tenés restricción de orígenes,
+> agregá tu dominio en **Authentication → URL Configuration → Redirect URLs**).
+
+**TL;DR de seguridad:** la clave `sb_publishable_...` es pública por diseño y
+puede quedarse en `config.js`. Lo que protege tus datos es el login + RLS: sin
+sesión, `anon` no puede leer ni escribir nada.
 
 ---
 
@@ -77,8 +139,11 @@ corrido sin errores.
 ```
 gestion_impresion_3d_v2/
 ├── supabase_schema.sql   ← BD nueva: tipos, tablas, índices, RPC, RLS y seed
+├── fix_rpc.sql           ← parche puntual si ya aplicaste el schema antes del fix
+├── migration_factura.sql ← migra una BD v2 existente: con_factura + IVA 22 %
+├── auth_rls.sql          ← login + lista blanca + RLS restrictivo (no borra datos)
 ├── config.js             ← URL y clave pública de Supabase
-├── engine.js             ← motor de cálculo (fórmulas, hh:mm, combos, punto de equilibrio)
+├── engine.js             ← motor de cálculo (fórmulas, hh:mm, IVA, combos, equilibrio)
 ├── db.js                 ← capa de persistencia y adaptadores al modelo de vista
 ├── app.js                ← controlador: estado central, render por módulo, eventos
 ├── index.html            ← interfaz de los 6 módulos
@@ -93,6 +158,21 @@ gestion_impresion_3d_v2/
 - Guardar un combo congela sus precios (`combo_items.precio_unitario`), para que
   el histórico no cambie si después se modifican los parámetros.
 - Crear un pedido inserta cabecera e ítems en **una sola transacción**.
-- Las políticas RLS son abiertas para `anon`/`authenticated` porque la demo no
-  tiene login. Si agregás autenticación, reemplazá `USING (true)` por una
-  condición sobre `auth.uid()`.
+- El IVA se calcula en `NUMERIC` dentro de PostgreSQL y en `Calc.conIVA()` en la
+  app; ambos usan redondeo a 2 decimales para que coincidan siempre.
+- El acceso es privado: `anon` no tiene permisos; solo usuarios autenticados y
+  presentes en `usuarios_autorizados` pueden leer/escribir, tanto por RLS como
+  dentro de las RPC (`SECURITY DEFINER`).
+
+### Solución de problemas
+
+- **`column reference "nombre" is ambiguous` al agregar un artículo**:
+  versión antigua de `api_obtener_o_crear_articulo`. Ejecutá `fix_rpc.sql` en el
+  SQL Editor. No borra datos. `supabase_schema.sql` ya viene corregido.
+- **`column articulos.id_articulo does not exist`**: la app v1 está hablándole
+  a la BD v2. Publicá los archivos de esta carpeta, no los de la versión anterior.
+- **`getElementById(...) is null` en `app.js:1121`**: quedó el `app.js` v1 junto
+  al `index.html` v2. Reemplazá todos los archivos y recargá con Ctrl+F5.
+- **`Could not find the function public.api_crear_pedido(...)` o falta
+  `con_factura`**: no ejecutaste `migration_factura.sql`. Corré ese archivo en
+  el SQL Editor (no borra datos) y recargá.

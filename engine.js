@@ -76,6 +76,16 @@ const Calc = (() => {
     return NaN;
   }
 
+  const IVA = 0.22;
+
+  /** Aplica el IVA uruguayo (22%) cuando el pedido es con factura. */
+  function conIVA(subtotal, conFactura) {
+    const base = round(Number(subtotal) || 0, 2);
+    if (!conFactura) return { subtotal: base, iva: 0, total: base };
+    const iva = round(base * IVA, 2);
+    return { subtotal: base, iva, total: round(base + iva, 2) };
+  }
+
   function normalizarReloj(texto) {
     const h = aHoras(texto);
     if (h === null) return '';
@@ -538,6 +548,8 @@ const Calc = (() => {
     aReloj,
     aHoras,
     normalizarReloj,
+    IVA,
+    conIVA,
     leerParametros,
     costoUnitario,
     resolverMedicion,

@@ -97,6 +97,7 @@ const DataStore = (() => {
     fecha: p.fecha,
     cliente: p.cliente,
     estado: p.estado,
+    conFactura: Boolean(p.con_factura),
     items: itemsPorPedido.get(Number(p.id)) || []
   });
 
@@ -112,12 +113,48 @@ const DataStore = (() => {
     }
 
     cliente = window.supabase.createClient(config.url, config.anonKey, {
-      auth: { persistSession: false, autoRefreshToken: false }
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true
+      }
     });
+    return true;
+  }
 
-    const { error } = await cliente.from('parametros_base').select('clave').limit(1);
-    if (error) {
-      throw new Error(`${error.message} — ¿Ejecutaste supabase_schema.sql en el SQL Editor?`);
+  /* ------------------------------- auth ----------------------------------- */
+
+  async function sesion() {
+    const { data } = await bd().auth.getSession();
+    return data.session || null;
+  }
+
+  async function usuario() {
+    const { data } = await bd().auth.getUser();
+    return data.user || null;
+  }
+
+  async function iniciarSesion(email, password) {
+    const { error } = await bd().auth.signInWithPassword({ email, password });
+    verificar(error, 'No se pudo iniciar sesión');
+  }
+
+  async function cerrarSesion() {
+    const { error } = await bd().auth.signOut();
+    verificar(error, 'No se pudo cerrar sesión');
+  }
+
+  function alCambiarAuth(callback) {
+    return bd().auth.onAuthStateChange(callback);
+  }
+
+  /** Confirma que el usuario autenticado está en la lista blanca de la BD. */
+  async function verificarAutorizacion() {
+    const { data, error } = await bd().from('usuarios_autorizados')
+      .select('email').limit(1);
+    verificar(error, 'No se pudo verificar la autorización');
+    if (!data || data.length === 0) {
+      throw new Error('Tu usuario no está autorizado. Pedí al administrador que agregue tu email a usuarios_autorizados.');
     }
     return true;
   }
@@ -281,10 +318,17 @@ const DataStore = (() => {
       p_cliente: pedido.cliente,
       p_fecha: pedido.fecha,
       p_estado: pedido.estado,
-      p_items: items
+      p_items: items,
+      p_con_factura: Boolean(pedido.conFactura)
     });
     verificar(error, 'No se pudo crear el pedido');
     return data;
+  }
+
+  async function cambiarFacturaPedido(id, conFactura) {
+    const { error } = await bd().from('pedidos')
+      .update({ con_factura: Boolean(conFactura) }).eq('id', id);
+    verificar(error, 'No se pudo actualizar la facturación');
   }
 
   async function cambiarEstadoPedido(id, estado) {
@@ -320,6 +364,12 @@ const DataStore = (() => {
 
   return {
     init,
+    sesion,
+    usuario,
+    iniciarSesion,
+    cerrarSesion,
+    alCambiarAuth,
+    verificarAutorizacion,
     cargarTodo,
     obtenerOCrearArticulo,
     renombrarArticulo,
@@ -333,6 +383,7 @@ const DataStore = (() => {
     renombrarCombo,
     eliminarCombo,
     crearPedido,
+    cambiarFacturaPedido,
     cambiarEstadoPedido,
     eliminarPedido,
     actualizarItemPedido,
